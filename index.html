@@ -464,7 +464,9 @@
         if(!list || !list.length) return;
         html += '<tr class="cat-row"><td colspan="'+(isAdmin()?5:4)+'">'+escapeHtml(cat)+'</td></tr>';
         list.forEach(function(t){
-          html += '<tr><td>'+escapeHtml(t.name)+'</td><td>'+(t.size?escapeHtml(t.size):"—")+'</td><td>'+escapeHtml(t.unit)+'</td>';
+          html += '<tr><td>'+escapeHtml(t.name)+'</td>';
+          html += '<td><input type="text" data-role="size-input" data-name="'+escapeHtml(t.name)+'" value="'+escapeHtml(t.size||"")+'" placeholder="cth: 36 x 055 x 63" style="width:150px;" '+(isAdmin()?'':'disabled')+'></td>';
+          html += '<td>'+escapeHtml(t.unit)+'</td>';
           html += '<td><input type="number" step="0.01" data-role="stock-input" data-name="'+escapeHtml(t.name)+'" value="'+(t.current_stock!=null?t.current_stock:"")+'" style="width:100px;" '+(isAdmin()?'':'disabled')+'></td>';
           if(isAdmin()){
             html += '<td><button class="btn-icon" data-action="remove-type" data-name="'+escapeHtml(t.name)+'" title="Hapus">✕</button></td>';
@@ -739,6 +741,17 @@
       toast("Stok diperbarui.");
       await loadAll();
       // don't full re-render to avoid losing focus on the input the admin just used
+    }
+
+    if(e.target.matches && e.target.matches('[data-role="size-input"]')){
+      if(!isAdmin()) return;
+      var sizeName = e.target.getAttribute("data-name");
+      var newSize = e.target.value.trim();
+      var newUnit = isRollSize(newSize) ? "roll" : "kg";
+      var updS = await sb.from("plastic_types").update({ size: newSize, unit: newUnit }).eq("name", sizeName);
+      if(updS.error){ toast("Gagal menyimpan ukuran.", "error"); return; }
+      toast("Ukuran diperbarui.");
+      await loadAll(); render();
     }
   }
 
