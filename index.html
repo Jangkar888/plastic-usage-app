@@ -1,0 +1,809 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project Plastic Usage</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>♻️</text></svg>">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<style>
+  :root{
+    --bg:#f4f5f7; --surface:#ffffff; --surface-2:#f9fafb; --border:#e2e4e9;
+    --text:#1b1e24; --text-muted:#6b7280;
+    --accent:#2563eb; --accent-contrast:#ffffff; --accent-soft:#e8effe;
+    --success:#15803d; --success-soft:#e7f6ec;
+    --warning:#b45309; --warning-soft:#fef3e0;
+    --danger:#b91c1c; --danger-soft:#fdeaea;
+    --radius:10px;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#15171c; --surface:#1d2026; --surface-2:#22262e; --border:#31353e;
+      --text:#e7e9ee; --text-muted:#9aa0ab;
+      --accent:#5b8def; --accent-contrast:#0b1220; --accent-soft:#1d2a44;
+      --success:#4ade80; --success-soft:#123120;
+      --warning:#f5a623; --warning-soft:#3a2a10;
+      --danger:#f87171; --danger-soft:#3a1616;
+    }
+  }
+  *{ box-sizing:border-box; }
+  html,body{ height:100%; }
+  body{ background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; margin:0; }
+  #nav{ position:sticky; top:0; z-index:10; display:flex; align-items:center; gap:4px; flex-wrap:wrap; background:var(--surface); border-bottom:1px solid var(--border); padding:10px 16px; }
+  #nav .brand{ font-weight:700; margin-right:16px; white-space:nowrap; }
+  #nav button.tab-btn{ background:transparent; border:none; color:var(--text-muted); font-size:14px; font-weight:600; padding:8px 12px; border-radius:8px; cursor:pointer; }
+  #nav button.tab-btn:hover{ background:var(--surface-2); color:var(--text); }
+  #nav button.tab-btn.active{ background:var(--accent-soft); color:var(--accent); }
+  #nav .spacer{ flex:1; }
+  #nav .who{ font-size:13px; color:var(--text-muted); margin-right:10px; }
+  #app{ max-width:980px; margin:0 auto; padding:20px 16px 60px; }
+  h2{ margin:0 0 4px; font-size:20px; }
+  h3{ margin:24px 0 10px; font-size:15px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.04em; }
+  .subtext{ color:var(--text-muted); font-size:13px; margin:0 0 16px; }
+  .card{ background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:18px; margin-bottom:18px; }
+  .grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; }
+  .stat{ background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:16px; }
+  .stat .num{ font-size:26px; font-weight:700; }
+  .stat .label{ color:var(--text-muted); font-size:13px; margin-top:2px; }
+  form.form-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; align-items:end; }
+  form.form-grid .field{ display:flex; flex-direction:column; gap:4px; }
+  form.form-grid .field.full{ grid-column:1 / -1; }
+  label{ font-size:12px; color:var(--text-muted); font-weight:600; }
+  input,select,textarea{ background:var(--surface-2); border:1px solid var(--border); color:var(--text); border-radius:8px; padding:9px 10px; font-size:14px; font-family:inherit; }
+  textarea{ resize:vertical; min-height:60px; }
+  input:focus,select:focus,textarea:focus{ outline:2px solid var(--accent); outline-offset:1px; }
+  input.invalid,select.invalid{ border-color:var(--danger); outline:2px solid var(--danger); outline-offset:1px; }
+  button{ font-family:inherit; }
+  .btn{ background:var(--accent); color:var(--accent-contrast); border:none; border-radius:8px; padding:10px 16px; font-size:14px; font-weight:600; cursor:pointer; text-decoration:none; display:inline-block; }
+  .btn:hover{ opacity:.92; }
+  .btn.secondary{ background:var(--surface-2); color:var(--text); border:1px solid var(--border); }
+  .btn.danger{ background:var(--danger-soft); color:var(--danger); border:1px solid transparent; }
+  .btn-row{ display:flex; gap:10px; flex-wrap:wrap; margin-top:6px; }
+  .btn-icon{ background:transparent; border:none; color:var(--text-muted); cursor:pointer; font-size:14px; padding:4px 8px; border-radius:6px; }
+  .btn-icon:hover{ background:var(--danger-soft); color:var(--danger); }
+  .table-wrap{ overflow-x:auto; border:1px solid var(--border); border-radius:var(--radius); }
+  table{ border-collapse:collapse; width:100%; min-width:640px; font-size:13.5px; }
+  th,td{ text-align:left; padding:10px 12px; border-bottom:1px solid var(--border); white-space:nowrap; }
+  th{ color:var(--text-muted); font-weight:600; background:var(--surface-2); position:sticky; top:0; }
+  tr:last-child td{ border-bottom:none; }
+  tr.cat-row td{ background:var(--surface-2); font-weight:700; color:var(--text-muted); text-transform:uppercase; font-size:11.5px; letter-spacing:.04em; }
+  .empty{ color:var(--text-muted); font-size:13.5px; padding:18px; text-align:center; }
+  .badge{ display:inline-block; padding:3px 10px; border-radius:999px; font-size:12px; font-weight:600; white-space:nowrap; }
+  .badge.requested{ background:var(--warning-soft); color:var(--warning); }
+  .badge.waiting{ background:var(--accent-soft); color:var(--accent); }
+  .badge.received{ background:var(--success-soft); color:var(--success); }
+  .badge.role{ background:var(--surface-2); border:1px solid var(--border); color:var(--text-muted); }
+  .type-chip{ display:inline-flex; align-items:center; gap:6px; background:var(--surface-2); border:1px solid var(--border); border-radius:999px; padding:5px 6px 5px 12px; font-size:13px; }
+  .spec-hint{ display:block; color:var(--text-muted); font-size:11.5px; min-height:14px; margin-top:2px; }
+  .banner{ background:var(--warning-soft); color:var(--warning); border-radius:8px; padding:10px 14px; font-size:13px; margin-bottom:16px; }
+  .banner.ok{ background:var(--success-soft); color:var(--success); }
+  .role-hint{ font-size:12px; color:var(--text-muted); font-style:italic; margin:-8px 0 14px; }
+  .activity-item{ display:flex; justify-content:space-between; gap:12px; padding:9px 0; border-bottom:1px solid var(--border); font-size:13.5px; }
+  .activity-item:last-child{ border-bottom:none; }
+  .activity-item .when{ color:var(--text-muted); font-size:12px; white-space:nowrap; }
+  #login-screen{ min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+  .login-card{ background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:32px; width:100%; max-width:360px; box-shadow:0 8px 30px rgba(0,0,0,.08); }
+  .login-card h1{ font-size:22px; margin:0 0 4px; display:flex; align-items:center; gap:8px; }
+  .login-card p.sub{ color:var(--text-muted); font-size:13px; margin:0 0 22px; }
+  .login-card .field{ display:flex; flex-direction:column; gap:5px; margin-bottom:14px; }
+  .login-card input{ padding:11px 12px; font-size:15px; }
+  .login-card button{ width:100%; margin-top:6px; padding:12px; font-size:15px; }
+  .login-error{ background:var(--danger-soft); color:var(--danger); border-radius:8px; padding:9px 12px; font-size:13px; margin-bottom:14px; display:none; }
+  #app-shell{ display:none; }
+  .hidden{ display:none !important; }
+</style>
+</head>
+<body>
+
+<div id="login-screen">
+  <form class="login-card" id="login-form" autocomplete="off">
+    <h1>♻️ Project Plastic Usage</h1>
+    <p class="sub">Masuk dengan username dan password Anda.</p>
+    <div class="login-error" id="login-error"></div>
+    <div class="field">
+      <label>Username</label>
+      <input type="text" id="login-username" autocapitalize="off" autocomplete="username" required>
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input type="password" id="login-password" autocomplete="current-password" required>
+    </div>
+    <button class="btn" type="submit" id="login-submit">Masuk</button>
+  </form>
+</div>
+
+<div id="app-shell">
+  <nav id="nav">
+    <span class="brand">♻️ Project Plastic Usage</span>
+    <button class="tab-btn" data-tab="dashboard">Dasbor Plastik</button>
+    <button class="tab-btn" data-tab="usage">Pemakaian Harian</button>
+    <button class="tab-btn" data-tab="orders">Pesanan Pembelian</button>
+    <button class="tab-btn" data-tab="incoming">Plastik Masuk</button>
+    <button class="tab-btn" data-tab="settings">Pengaturan</button>
+    <span class="spacer"></span>
+    <span class="who" id="who-label"></span>
+    <button class="btn secondary" id="logout-btn" style="padding:7px 12px;font-size:13px;">Keluar</button>
+  </nav>
+  <div id="app"></div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  var SUPABASE_URL = "https://wzpssdcvqojqrioikpnr.supabase.co";
+  var SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind6cHNzZGN2cW9qcXJpb2lrcG5yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgxNzY2MjEsImV4cCI6MjEwMzc1MjYyMX0.uoNIcHNXfBErfZ3T7TZzDhY2wTVGN0WOLnxsVu9udmg";
+  var sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  var AUTH_DOMAIN = "plastikusage.local";
+
+  var CATEGORY_ORDER = ["Plastik Mie","Plastik Bihun","Plastik Makaroni","Jarang Dipakai"];
+  var UNITS = ["kg","roll"];
+
+  var STATUS_LABEL = { "Requested":"Diminta", "Waiting for Shipment":"Menunggu Pengiriman", "Received":"Diterima" };
+  function statusLabel(s){ return STATUS_LABEL[s] || s; }
+
+  var state = {
+    plasticTypes: [],      // [{id,name,category,size,unit,current_stock}]
+    suppliers: [],         // [{id,name}]
+    settings: { purchasingEmail:"", purchasingWhatsapp:"" },
+    dailyUsage: [],
+    purchaseRequests: [],
+    incoming: []
+  };
+  var session = null;
+  var profile = null;      // {id, display_name, role}
+  var activeTab = "dashboard";
+  var channels = [];
+
+  // ---------- helpers ----------
+  function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
+  function pad2(n){ return String(n).padStart(2,"0"); }
+  function todayIso(){ var d=new Date(); return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate()); }
+  function escapeHtml(str){
+    return String(str==null?"":str).replace(/[&<>"']/g,function(c){
+      return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
+    });
+  }
+  function formatDate(iso){
+    if(!iso) return "";
+    var p = iso.split("-");
+    if(p.length!==3) return iso;
+    var d = new Date(Number(p[0]), Number(p[1])-1, Number(p[2]));
+    return d.toLocaleDateString("id-ID",{year:"numeric",month:"short",day:"numeric"});
+  }
+  function formatDateTime(ts){
+    if(!ts) return "";
+    return new Date(ts).toLocaleString("id-ID",{year:"numeric",month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"});
+  }
+  function fmtQty(q,unit){
+    if(q==null) return "—";
+    var n = Number(q);
+    var s = (Math.round(n*100)/100).toString();
+    return s + " " + (unit||"");
+  }
+  function isRollSize(size){
+    if(!size) return false;
+    var parts = String(size).split("x").map(function(p){ return p.trim(); });
+    return parts.length>=2 && parts[parts.length-1]==="1000";
+  }
+  function digitsOnly(str){ return String(str||"").replace(/[^0-9]/g,""); }
+  function toast(msg, kind){
+    var t = document.createElement("div");
+    t.textContent = msg;
+    Object.assign(t.style, {
+      position:"fixed", bottom:"20px", left:"50%", transform:"translateX(-50%)",
+      background: kind==="error" ? "var(--danger)" : "var(--accent)",
+      color:"var(--accent-contrast)", padding:"10px 18px", borderRadius:"8px",
+      boxShadow:"0 4px 16px rgba(0,0,0,.25)", zIndex:9999, fontSize:"14px",
+      maxWidth:"90vw", textAlign:"center"
+    });
+    document.body.appendChild(t);
+    setTimeout(function(){ t.remove(); }, kind==="error" ? 7000 : 3800);
+  }
+  function markInvalid(form, name){
+    Array.prototype.forEach.call(form.querySelectorAll(".invalid"), function(el){ el.classList.remove("invalid"); });
+    var el = form.querySelector('[name="'+name+'"]');
+    if(el){ el.classList.add("invalid"); try{ el.scrollIntoView({block:"center", behavior:"smooth"}); }catch(e){} el.focus(); }
+  }
+  function role(){ return profile ? profile.role : "staff"; }
+  function isAdmin(){ return role()==="admin"; }
+  function isPurchasing(){ return role()==="purchasing" || role()==="admin"; }
+  function isStaff(){ return role()==="staff" || role()==="admin"; }
+
+  function typesByCategory(){
+    var byCat = {};
+    CATEGORY_ORDER.forEach(function(c){ byCat[c]=[]; });
+    state.plasticTypes.forEach(function(t){
+      var c = t.category || "Jarang Dipakai";
+      if(!byCat[c]) byCat[c]=[];
+      byCat[c].push(t);
+    });
+    return byCat;
+  }
+  function typeOptions(selected){
+    var byCat = typesByCategory();
+    var html = '<option value="">Pilih jenis…</option>';
+    CATEGORY_ORDER.forEach(function(cat){
+      var list = byCat[cat];
+      if(!list || !list.length) return;
+      html += '<optgroup label="'+escapeHtml(cat)+'">';
+      list.forEach(function(t){
+        var label = t.size ? (t.name+' — '+t.size) : t.name;
+        html += '<option value="'+escapeHtml(t.name)+'"'+(t.name===selected?' selected':'')+'>'+escapeHtml(label)+'</option>';
+      });
+      html += '</optgroup>';
+    });
+    return html;
+  }
+  function unitOptions(selected){
+    return UNITS.map(function(u){ return '<option value="'+u+'"'+(u===selected?' selected':'')+'>'+u+'</option>'; }).join("");
+  }
+  function supplierOptions(selected){
+    return '<option value="">Pilih pemasok…</option>' + state.suppliers.map(function(s){
+      return '<option value="'+escapeHtml(s.name)+'"'+(s.name===selected?' selected':'')+'>'+escapeHtml(s.name)+'</option>';
+    }).join("");
+  }
+  function findType(name){ return state.plasticTypes.find(function(t){ return t.name===name; }); }
+
+  // ---------- auth ----------
+  function resolveEmail(usernameOrEmail){
+    var v = String(usernameOrEmail||"").trim().toLowerCase();
+    if(v.indexOf("@")!==-1) return v;
+    return v + "@" + AUTH_DOMAIN;
+  }
+
+  async function doLogin(username, password){
+    var email = resolveEmail(username);
+    var res = await sb.auth.signInWithPassword({ email: email, password: password });
+    if(res.error) throw res.error;
+    return res.data.session;
+  }
+
+  async function loadProfile(userId){
+    var res = await sb.from("profiles").select("*").eq("id", userId).single();
+    if(res.error){ return { id:userId, display_name:"", role:"staff" }; }
+    return res.data;
+  }
+
+  // ---------- data loading ----------
+  async function loadAll(){
+    var [pt, sup, settings, du, pr, inc] = await Promise.all([
+      sb.from("plastic_types").select("*").order("category").order("name"),
+      sb.from("suppliers").select("*").order("name"),
+      sb.from("app_settings").select("*"),
+      sb.from("daily_usage").select("*").order("created_at", {ascending:false}),
+      sb.from("purchase_requests").select("*").order("created_at", {ascending:false}),
+      sb.from("incoming").select("*").order("created_at", {ascending:false}),
+    ]);
+    state.plasticTypes = (pt.data||[]).sort(function(a,b){
+      var ca = CATEGORY_ORDER.indexOf(a.category), cb = CATEGORY_ORDER.indexOf(b.category);
+      if(ca!==cb) return ca-cb;
+      return 0;
+    });
+    state.suppliers = sup.data || [];
+    var settingsMap = {};
+    (settings.data||[]).forEach(function(row){ settingsMap[row.key]=row.value; });
+    state.settings = { purchasingEmail: settingsMap.purchasingEmail||"", purchasingWhatsapp: settingsMap.purchasingWhatsapp||"" };
+    state.dailyUsage = du.data || [];
+    state.purchaseRequests = pr.data || [];
+    state.incoming = inc.data || [];
+  }
+
+  function subscribeRealtime(){
+    channels.forEach(function(ch){ sb.removeChannel(ch); });
+    channels = [];
+    ["daily_usage","purchase_requests","incoming","plastic_types","suppliers","app_settings"].forEach(function(table){
+      var ch = sb.channel("rt-"+table)
+        .on("postgres_changes", { event:"*", schema:"public", table:table }, function(){
+          loadAll().then(render);
+        })
+        .subscribe();
+      channels.push(ch);
+    });
+  }
+
+  // ---------- renderers ----------
+  function renderDashboard(){
+    var pending = state.purchaseRequests.filter(function(r){ return r.status==="Requested"; }).length;
+    var waiting = state.purchaseRequests.filter(function(r){ return r.status==="Waiting for Shipment"; }).length;
+    var now = new Date();
+    var receivedThisMonth = state.incoming.filter(function(i){
+      var d = new Date(i.date_received);
+      return d.getFullYear()===now.getFullYear() && d.getMonth()===now.getMonth();
+    }).length;
+    var usageCount = state.dailyUsage.length;
+
+    var events = [];
+    state.dailyUsage.forEach(function(u){ events.push({ ts:new Date(u.created_at).getTime(), text:"Pemakaian dicatat: "+fmtQty(u.quantity,u.unit)+" "+escapeHtml(u.plastic_type)+(u.staff_name?" oleh "+escapeHtml(u.staff_name):"") }); });
+    state.purchaseRequests.forEach(function(r){ events.push({ ts:new Date(r.created_at).getTime(), text:"Permintaan pembelian: "+escapeHtml(r.plastic_type)+" (stok "+fmtQty(r.stock,r.unit)+")"+(r.requested_by?" oleh "+escapeHtml(r.requested_by):"") }); });
+    state.incoming.forEach(function(i){ events.push({ ts:new Date(i.created_at).getTime(), text:"Plastik masuk: "+fmtQty(i.quantity,i.unit)+" "+escapeHtml(i.plastic_type)+(i.supplier?" dari "+escapeHtml(i.supplier):"") }); });
+    events.sort(function(a,b){ return b.ts-a.ts; });
+    events = events.slice(0,8);
+
+    var html = "";
+    html += '<h2>Dasbor Plastik</h2><p class="subtext">Ringkasan pemakaian plastik, permintaan pembelian, dan plastik yang masuk.</p>';
+    html += '<div class="grid">';
+    html += '<div class="stat"><div class="num">'+pending+'</div><div class="label">Permintaan pembelian tertunda</div></div>';
+    html += '<div class="stat"><div class="num">'+waiting+'</div><div class="label">Menunggu pengiriman</div></div>';
+    html += '<div class="stat"><div class="num">'+receivedThisMonth+'</div><div class="label">Diterima bulan ini</div></div>';
+    html += '<div class="stat"><div class="num">'+usageCount+'</div><div class="label">Total catatan pemakaian</div></div>';
+    html += '</div>';
+    html += '<h3>Aktivitas terbaru</h3><div class="card">';
+    if(events.length===0){ html += '<div class="empty">Belum ada aktivitas.</div>'; }
+    else { html += events.map(function(e){ return '<div class="activity-item"><span>'+e.text+'</span><span class="when">'+formatDateTime(e.ts)+'</span></div>'; }).join(""); }
+    html += "</div>";
+    return html;
+  }
+
+  function renderUsage(){
+    var rows = state.dailyUsage.slice().sort(function(a,b){ return (b.usage_date||"").localeCompare(a.usage_date||"") || (new Date(b.created_at)-new Date(a.created_at)); });
+    var canSubmit = isStaff();
+    var html = "";
+    html += '<h2>Pemakaian Plastik Harian</h2><p class="role-hint">Diisi oleh: Staf produksi</p>';
+    if(canSubmit){
+      html += '<div class="card"><form class="form-grid" data-form="usage">';
+      html += '<div class="field"><label>Tanggal</label><input type="date" name="date" value="'+todayIso()+'"></div>';
+      html += '<div class="field"><label>Jenis plastik</label><select name="plasticType">'+typeOptions("")+'</select><small class="spec-hint"></small></div>';
+      html += '<div class="field"><label>Jumlah</label><input type="number" step="0.01" min="0" name="quantity" placeholder="0.00"></div>';
+      html += '<div class="field"><label>Satuan</label><select name="unit">'+unitOptions("kg")+'</select><small class="spec-hint unit-hint"></small></div>';
+      html += '<div class="field"><label>Nama staf</label><input type="text" name="staffName" placeholder="Nama Anda" value="'+escapeHtml(profile?profile.display_name:"")+'"></div>';
+      html += '<div class="field"><button class="btn" type="submit">Tambah catatan pemakaian</button></div>';
+      html += '</form></div>';
+    }
+    html += '<h3>Riwayat pemakaian</h3>';
+    if(rows.length===0){ html += '<div class="table-wrap"><div class="empty">Belum ada catatan pemakaian.</div></div>'; }
+    else {
+      html += '<div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Jenis plastik</th><th>Jumlah</th><th>Staf</th><th></th></tr></thead><tbody>';
+      rows.forEach(function(r){
+        html += '<tr><td>'+formatDate(r.usage_date)+'</td><td>'+escapeHtml(r.plastic_type)+'</td><td>'+fmtQty(r.quantity,r.unit)+'</td><td>'+escapeHtml(r.staff_name||"—")+'</td>'+
+          '<td>'+(isAdmin() ? '<button class="btn-icon" data-action="delete-usage" data-id="'+r.id+'" title="Hapus">✕</button>' : '')+'</td></tr>';
+      });
+      html += "</tbody></table></div>";
+    }
+    return html;
+  }
+
+  function renderOrders(){
+    var rows = state.purchaseRequests.slice().sort(function(a,b){ return new Date(b.created_at)-new Date(a.created_at); });
+    var pendingCount = state.purchaseRequests.filter(function(r){ return r.status==="Requested"; }).length;
+    var canCreate = isStaff();
+    var canManage = isPurchasing();
+    var html = "";
+    html += '<h2>Pesanan Pembelian</h2><p class="role-hint">Formulir permintaan diisi oleh: Staf produksi &middot; Pemesanan &amp; pelacakan oleh: Staf pembelian</p>';
+    if(canCreate){
+      html += '<div class="card"><form class="form-grid" data-form="request">';
+      html += '<div class="field"><label>Jenis plastik</label><select name="plasticType">'+typeOptions("")+'</select><small class="spec-hint"></small></div>';
+      html += '<div class="field"><label>Stok saat ini</label><input type="number" step="0.01" min="0" name="stock" placeholder="0.00"></div>';
+      html += '<div class="field"><label>Satuan</label><select name="unit">'+unitOptions("kg")+'</select><small class="spec-hint unit-hint"></small></div>';
+      html += '<div class="field"><label>Diminta oleh</label><input type="text" name="requestedBy" placeholder="Nama Anda" value="'+escapeHtml(profile?profile.display_name:"")+'"></div>';
+      html += '<div class="field full"><label>Catatan (opsional)</label><textarea name="notes" placeholder="cth: dibutuhkan hari Jumat"></textarea></div>';
+      html += '<div class="field"><button class="btn" type="submit">Kirim permintaan</button></div>';
+      html += '</form></div>';
+    }
+
+    if(canManage){
+      html += '<h3>Beri tahu staf pembelian</h3><div class="card">';
+      html += '<p class="subtext" style="margin-bottom:10px;">Membuka pesan yang sudah terisi untuk semua permintaan <strong>tertunda ('+pendingCount+')</strong> — Anda tetap perlu menekan kirim sendiri.</p>';
+      html += '<div class="btn-row">' + buildNotifyLinks() + '</div></div>';
+    }
+
+    html += '<h3>Pelacakan pesanan</h3>';
+    if(rows.length===0){ html += '<div class="table-wrap"><div class="empty">Belum ada permintaan pembelian.</div></div>'; }
+    else {
+      html += '<div class="table-wrap"><table><thead><tr><th>Diminta</th><th>Jenis plastik</th><th>Stok saat ini</th><th>Diminta oleh</th><th>Catatan</th><th>Status</th><th>Jumlah dibeli</th><th></th></tr></thead><tbody>';
+      rows.forEach(function(r){
+        var badgeClass = r.status==="Requested" ? "requested" : (r.status==="Waiting for Shipment" ? "waiting" : "received");
+        var orderCell;
+        if(r.status==="Requested" && canManage){
+          orderCell = '<div style="display:flex;gap:6px;align-items:center;">'+
+            '<input type="number" step="0.01" min="0" placeholder="Jumlah" data-role="order-qty" data-id="'+r.id+'" style="width:80px;">'+
+            '<button class="btn secondary" data-action="confirm-order" data-id="'+r.id+'" style="padding:6px 10px;font-size:12px;">Tandai dipesan</button>'+
+            '</div>';
+        } else if(r.order_quantity!=null){
+          orderCell = fmtQty(r.order_quantity, r.unit);
+        } else {
+          orderCell = "—";
+        }
+        html += '<tr><td>'+formatDate(r.request_date)+'</td><td>'+escapeHtml(r.plastic_type)+'</td><td>'+fmtQty(r.stock,r.unit)+'</td>'+
+          '<td>'+escapeHtml(r.requested_by||"—")+'</td><td>'+escapeHtml(r.notes||"—")+'</td>'+
+          '<td><span class="badge '+badgeClass+'">'+escapeHtml(statusLabel(r.status))+'</span></td>'+
+          '<td>'+orderCell+'</td>'+
+          '<td>'+((r.status==="Requested" && (isAdmin())) ? '<button class="btn-icon" data-action="delete-request" data-id="'+r.id+'" title="Hapus">✕</button>' : '')+'</td>'+
+          '</tr>';
+      });
+      html += "</tbody></table></div>";
+    }
+    return html;
+  }
+
+  function renderIncoming(){
+    var rows = state.incoming.slice().sort(function(a,b){ return new Date(b.created_at)-new Date(a.created_at); });
+    var waitingRequests = state.purchaseRequests.filter(function(r){ return r.status==="Waiting for Shipment"; });
+    var linkOptions = '<option value="">— tidak terhubung ke permintaan —</option>' + waitingRequests.map(function(r){
+      var qty = r.order_quantity!=null ? r.order_quantity : r.stock;
+      return '<option value="'+r.id+'">'+escapeHtml(r.plastic_type)+' — '+fmtQty(qty,r.unit)+' (diminta oleh '+escapeHtml(r.requested_by||"—")+', '+formatDate(r.request_date)+')</option>';
+    }).join("");
+    var html = "";
+    html += '<h2>Plastik Masuk</h2><p class="role-hint">Diisi oleh: Staf pembelian, saat pemasok mengirim plastik</p>';
+    html += '<div class="card"><form class="form-grid" data-form="incoming">';
+    html += '<div class="field"><label>Tanggal diterima</label><input type="date" name="dateReceived" value="'+todayIso()+'"></div>';
+    html += '<div class="field"><label>Jenis plastik</label><select name="plasticType">'+typeOptions("")+'</select><small class="spec-hint"></small></div>';
+    html += '<div class="field"><label>Jumlah</label><input type="number" step="0.01" min="0" name="quantity" placeholder="0.00"></div>';
+    html += '<div class="field"><label>Satuan</label><select name="unit">'+unitOptions("kg")+'</select><small class="spec-hint unit-hint"></small></div>';
+    html += '<div class="field"><label>Pemasok</label><select name="supplier">'+supplierOptions("")+'</select></div>';
+    html += '<div class="field"><label>Diterima oleh</label><input type="text" name="receivedBy" placeholder="Nama Anda" value="'+escapeHtml(profile?profile.display_name:"")+'"></div>';
+    html += '<div class="field full"><label>Hubungkan ke pesanan pembelian (opsional)</label><select name="linkedRequestId">'+linkOptions+'</select></div>';
+    html += '<div class="field"><button class="btn" type="submit">Catat plastik masuk</button></div>';
+    html += '</form></div>';
+    html += '<h3>Riwayat plastik masuk</h3>';
+    if(rows.length===0){ html += '<div class="table-wrap"><div class="empty">Belum ada plastik masuk yang dicatat.</div></div>'; }
+    else {
+      html += '<div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Jenis plastik</th><th>Jumlah</th><th>Pemasok</th><th>Diterima oleh</th><th>Pesanan terhubung</th><th></th></tr></thead><tbody>';
+      rows.forEach(function(r){
+        html += '<tr><td>'+formatDate(r.date_received)+'</td><td>'+escapeHtml(r.plastic_type)+'</td><td>'+fmtQty(r.quantity,r.unit)+'</td>'+
+          '<td>'+escapeHtml(r.supplier||"—")+'</td><td>'+escapeHtml(r.received_by||"—")+'</td><td>'+(r.linked_request_id?"Ya":"—")+'</td>'+
+          '<td>'+(isAdmin() ? '<button class="btn-icon" data-action="delete-incoming" data-id="'+r.id+'" title="Hapus">✕</button>' : '')+'</td></tr>';
+      });
+      html += "</tbody></table></div>";
+    }
+    return html;
+  }
+
+  function renderSettings(){
+    var html = "";
+    html += '<h2>Pengaturan</h2><p class="subtext">Kelola jenis plastik, stok, pemasok, dan kontak staf pembelian.</p>';
+
+    html += '<div class="card"><h3 style="margin-top:0;">Jenis plastik &amp; stok saat ini</h3>';
+    html += '<p class="subtext">Ukuran ditampilkan sebagai lebar x tebal x panjang. Stok bisa diperbarui langsung di sini.</p>';
+    if(state.plasticTypes.length===0){ html += '<div class="table-wrap"><div class="empty">Belum ada jenis plastik.</div></div>'; }
+    else {
+      html += '<div class="table-wrap"><table><thead><tr><th>Jenis plastik</th><th>Ukuran</th><th>Satuan</th><th>Stok saat ini</th>'+(isAdmin()?'<th></th>':'')+'</tr></thead><tbody>';
+      var byCat = typesByCategory();
+      CATEGORY_ORDER.forEach(function(cat){
+        var list = byCat[cat];
+        if(!list || !list.length) return;
+        html += '<tr class="cat-row"><td colspan="'+(isAdmin()?5:4)+'">'+escapeHtml(cat)+'</td></tr>';
+        list.forEach(function(t){
+          html += '<tr><td>'+escapeHtml(t.name)+'</td><td>'+(t.size?escapeHtml(t.size):"—")+'</td><td>'+escapeHtml(t.unit)+'</td>';
+          html += '<td><input type="number" step="0.01" data-role="stock-input" data-name="'+escapeHtml(t.name)+'" value="'+(t.current_stock!=null?t.current_stock:"")+'" style="width:100px;" '+(isAdmin()?'':'disabled')+'></td>';
+          if(isAdmin()){
+            html += '<td><button class="btn-icon" data-action="remove-type" data-name="'+escapeHtml(t.name)+'" title="Hapus">✕</button></td>';
+          }
+          html += "</tr>";
+        });
+      });
+      html += "</tbody></table></div>";
+    }
+    if(isAdmin()){
+      html += '<form class="form-grid" style="margin-top:14px;" data-form="add-type">';
+      html += '<div class="field"><label>Jenis plastik baru</label><input type="text" name="typeName" placeholder="cth: PVC Roll"></div>';
+      html += '<div class="field"><label>Kategori</label><select name="typeCategory">'+CATEGORY_ORDER.map(function(c){ return '<option value="'+escapeHtml(c)+'">'+escapeHtml(c)+'</option>'; }).join("")+'</select></div>';
+      html += '<div class="field"><label>Ukuran (opsional)</label><input type="text" name="typeSize" placeholder="cth: 36 x 055 x 63"></div>';
+      html += '<div class="field"><button class="btn secondary" type="submit">Tambah jenis</button></div>';
+      html += "</form>";
+    }
+    html += "</div>";
+
+    html += '<div class="card"><h3 style="margin-top:0;">Pemasok plastik</h3>';
+    if(state.suppliers.length===0){ html += '<div class="table-wrap"><div class="empty">Belum ada pemasok.</div></div>'; }
+    else {
+      html += '<div class="btn-row" style="margin-bottom:14px;">' + state.suppliers.map(function(s){
+        return '<span class="type-chip">'+escapeHtml(s.name)+' <button class="btn-icon" data-action="remove-supplier" data-name="'+escapeHtml(s.name)+'" title="Hapus">✕</button></span>';
+      }).join("") + '</div>';
+    }
+    html += '<form class="form-grid" data-form="add-supplier"><div class="field"><label>Pemasok baru</label><input type="text" name="supplierName" placeholder="cth: Nama Pemasok"></div><div class="field"><button class="btn secondary" type="submit">Tambah pemasok</button></div></form>';
+    html += "</div>";
+
+    html += '<div class="card"><h3 style="margin-top:0;">Kontak staf pembelian</h3>';
+    html += '<p class="subtext">Digunakan untuk mengisi otomatis pesan email/WhatsApp pada tombol "Beri tahu staf pembelian" di tab Pesanan Pembelian.</p>';
+    html += '<form class="form-grid" data-form="save-settings">';
+    html += '<div class="field"><label>Email staf pembelian</label><input type="email" name="purchasingEmail" value="'+escapeHtml(state.settings.purchasingEmail)+'" placeholder="purchasing@company.com"></div>';
+    html += '<div class="field"><label>WhatsApp staf pembelian (dengan kode negara, hanya angka)</label><input type="text" name="purchasingWhatsapp" value="'+escapeHtml(state.settings.purchasingWhatsapp)+'" placeholder="6281234567"></div>';
+    html += '<div class="field"><button class="btn" type="submit">Simpan kontak</button></div>';
+    html += "</form></div>";
+
+    html += '<div class="card"><h3 style="margin-top:0;">Akun &amp; peran staf</h3>';
+    html += '<p class="subtext">Untuk menambah akun staf baru atau mengubah peran, gunakan dashboard Supabase (Authentication → Users, dan tabel profiles).</p>';
+    html += "</div>";
+    return html;
+  }
+
+  function renderTab(tab){
+    if(tab==="usage") return renderUsage();
+    if(tab==="orders") return renderOrders();
+    if(tab==="incoming" && isPurchasing()) return renderIncoming();
+    if(tab==="settings" && isPurchasing()) return renderSettings();
+    return renderDashboard();
+  }
+
+  function visibleTabs(){
+    if(isPurchasing()) return ["dashboard","usage","orders","incoming","settings"];
+    return ["dashboard","usage","orders"];
+  }
+
+  function render(){
+    var tabs = visibleTabs();
+    if(tabs.indexOf(activeTab)===-1) activeTab = "dashboard";
+    Array.prototype.forEach.call(document.querySelectorAll("#nav .tab-btn"), function(b){
+      var t = b.getAttribute("data-tab");
+      b.classList.toggle("hidden", tabs.indexOf(t)===-1);
+      b.classList.toggle("active", t===activeTab);
+    });
+    document.getElementById("who-label").textContent = (profile ? (profile.display_name||"") : "") + " · " + roleLabel(role());
+    document.getElementById("app").innerHTML = renderTab(activeTab);
+  }
+  function roleLabel(r){
+    return { staff:"Staf produksi", purchasing:"Staf pembelian", admin:"Admin" }[r] || r;
+  }
+
+  function buildNotifyLinks(){
+    var pending = state.purchaseRequests.filter(function(r){ return r.status==="Requested"; });
+    if(pending.length===0){
+      return '<span class="btn secondary" style="opacity:.5;cursor:not-allowed;">📧 Email daftar ke staf pembelian</span>'+
+        '<span class="btn secondary" style="opacity:.5;cursor:not-allowed;">💬 WhatsApp daftar ke staf pembelian</span>';
+    }
+    var lines = pending.map(function(r){
+      return "- " + r.plastic_type + ": stok saat ini " + fmtQty(r.stock,r.unit) + (r.requested_by?" (diminta oleh "+r.requested_by+")":"") + (r.notes?" — "+r.notes:"");
+    });
+    var body = "Mohon cek stok plastik berikut dan tentukan jumlah pembelian:\n\n" + lines.join("\n") + "\n\nDikirim dari Project Plastic Usage.";
+    var mailHtml, waHtml;
+    if(state.settings.purchasingEmail){
+      var mailUrl = "mailto:" + encodeURIComponent(state.settings.purchasingEmail) + "?subject=" + encodeURIComponent("Daftar permintaan pembelian plastik") + "&body=" + encodeURIComponent(body);
+      mailHtml = '<a class="btn secondary" href="'+escapeHtml(mailUrl)+'">📧 Email daftar ke staf pembelian</a>';
+    } else {
+      mailHtml = '<span class="btn secondary" style="opacity:.5;cursor:not-allowed;" title="Isi email staf pembelian di Pengaturan">📧 Email daftar ke staf pembelian</span>';
+    }
+    var phone = digitsOnly(state.settings.purchasingWhatsapp);
+    if(phone){
+      var waUrl = "https://wa.me/" + phone + "?text=" + encodeURIComponent(body);
+      waHtml = '<a class="btn secondary" href="'+escapeHtml(waUrl)+'" target="_blank" rel="noopener noreferrer">💬 WhatsApp daftar ke staf pembelian</a>';
+    } else {
+      waHtml = '<span class="btn secondary" style="opacity:.5;cursor:not-allowed;" title="Isi WhatsApp staf pembelian di Pengaturan">💬 WhatsApp daftar ke staf pembelian</span>';
+    }
+    return mailHtml + waHtml;
+  }
+
+  function formData(form){
+    var fd = new FormData(form), o = {};
+    fd.forEach(function(v,k){ o[k]=v; });
+    return o;
+  }
+
+  // ---------- mutations ----------
+  async function handleFormSubmit(e){
+    var form = e.target.closest("form[data-form]");
+    if(!form) return;
+    e.preventDefault();
+    var kind = form.getAttribute("data-form");
+    var data = formData(form);
+
+    try{
+      if(kind==="usage"){
+        if(!data.plasticType){ toast("Mohon pilih jenis plastik terlebih dahulu.", "error"); markInvalid(form,"plasticType"); return; }
+        if(!data.quantity || Number(data.quantity)<=0){ toast("Mohon isi jumlah (harus lebih dari 0).", "error"); markInvalid(form,"quantity"); return; }
+        var ins = await sb.from("daily_usage").insert({
+          usage_date: data.date||todayIso(), plastic_type: data.plasticType, quantity: Number(data.quantity),
+          unit: data.unit||"kg", staff_name: data.staffName||"", created_by: session.user.id
+        });
+        if(ins.error) throw ins.error;
+        toast("Catatan pemakaian ditambahkan.");
+        form.reset();
+        await loadAll(); render();
+      } else if(kind==="request"){
+        if(!data.plasticType){ toast("Mohon pilih jenis plastik terlebih dahulu.", "error"); markInvalid(form,"plasticType"); return; }
+        if(!data.stock || Number(data.stock)<=0){ toast("Mohon isi stok saat ini (harus lebih dari 0).", "error"); markInvalid(form,"stock"); return; }
+        var ins2 = await sb.from("purchase_requests").insert({
+          request_date: todayIso(), plastic_type: data.plasticType, stock: Number(data.stock), unit: data.unit||"kg",
+          requested_by: data.requestedBy||"", notes: data.notes||"", status:"Requested", created_by: session.user.id
+        });
+        if(ins2.error) throw ins2.error;
+        toast("Permintaan pembelian terkirim.");
+        form.reset();
+        await loadAll(); render();
+      } else if(kind==="incoming"){
+        if(!data.plasticType){ toast("Mohon pilih jenis plastik terlebih dahulu.", "error"); markInvalid(form,"plasticType"); return; }
+        if(!data.quantity || Number(data.quantity)<=0){ toast("Mohon isi jumlah (harus lebih dari 0).", "error"); markInvalid(form,"quantity"); return; }
+        var entry = {
+          date_received: data.dateReceived||todayIso(), plastic_type: data.plasticType, quantity: Number(data.quantity),
+          unit: data.unit||"kg", supplier: data.supplier||"", received_by: data.receivedBy||"",
+          linked_request_id: data.linkedRequestId||null, created_by: session.user.id
+        };
+        var insInc = await sb.from("incoming").insert(entry).select().single();
+        if(insInc.error) throw insInc.error;
+        if(data.linkedRequestId){
+          var upd = await sb.from("purchase_requests").update({ status:"Received", received_at:new Date().toISOString(), incoming_id: insInc.data.id }).eq("id", data.linkedRequestId);
+          if(upd.error) throw upd.error;
+        }
+        toast("Plastik masuk telah dicatat.");
+        form.reset();
+        await loadAll(); render();
+      } else if(kind==="add-type"){
+        var name = (data.typeName||"").trim();
+        if(!name) return;
+        if(findType(name)){ toast("Jenis tersebut sudah ada.", "error"); return; }
+        var size = (data.typeSize||"").trim();
+        var unit = isRollSize(size) ? "roll" : "kg";
+        var insT = await sb.from("plastic_types").insert({ name:name, category:data.typeCategory||"Jarang Dipakai", size:size, unit:unit });
+        if(insT.error) throw insT.error;
+        toast("Jenis plastik ditambahkan.");
+        form.reset();
+        await loadAll(); render();
+      } else if(kind==="add-supplier"){
+        var supName = (data.supplierName||"").trim();
+        if(!supName) return;
+        if(state.suppliers.some(function(s){return s.name===supName;})){ toast("Pemasok tersebut sudah ada.", "error"); return; }
+        var insS = await sb.from("suppliers").insert({ name: supName });
+        if(insS.error) throw insS.error;
+        toast("Pemasok ditambahkan.");
+        form.reset();
+        await loadAll(); render();
+      } else if(kind==="save-settings"){
+        var email = (data.purchasingEmail||"").trim();
+        var wa = (data.purchasingWhatsapp||"").trim();
+        var r1 = await sb.from("app_settings").upsert({ key:"purchasingEmail", value: email });
+        var r2 = await sb.from("app_settings").upsert({ key:"purchasingWhatsapp", value: wa });
+        if(r1.error) throw r1.error;
+        if(r2.error) throw r2.error;
+        toast("Kontak berhasil disimpan.");
+        await loadAll(); render();
+      }
+    } catch(err){
+      console.error(err);
+      toast("Gagal menyimpan ("+(err.message||"error")+").", "error");
+    }
+  }
+
+  async function handleClick(e){
+    var el;
+    if((el = e.target.closest('[data-action="delete-usage"]'))){
+      if(!confirm("Hapus catatan pemakaian ini?")) return;
+      var d1 = await sb.from("daily_usage").delete().eq("id", el.getAttribute("data-id"));
+      if(d1.error){ toast("Gagal menghapus.", "error"); return; }
+      await loadAll(); render(); return;
+    }
+    if((el = e.target.closest('[data-action="delete-request"]'))){
+      if(!confirm("Hapus permintaan pembelian ini?")) return;
+      var d2 = await sb.from("purchase_requests").delete().eq("id", el.getAttribute("data-id"));
+      if(d2.error){ toast("Gagal menghapus.", "error"); return; }
+      await loadAll(); render(); return;
+    }
+    if((el = e.target.closest('[data-action="delete-incoming"]'))){
+      if(!confirm("Hapus catatan plastik masuk ini?")) return;
+      var d3 = await sb.from("incoming").delete().eq("id", el.getAttribute("data-id"));
+      if(d3.error){ toast("Gagal menghapus.", "error"); return; }
+      await loadAll(); render(); return;
+    }
+    if((el = e.target.closest('[data-action="remove-type"]'))){
+      var tName = el.getAttribute("data-name");
+      if(!confirm('Hapus jenis plastik "'+tName+'"?')) return;
+      var d4 = await sb.from("plastic_types").delete().eq("name", tName);
+      if(d4.error){ toast("Gagal menghapus.", "error"); return; }
+      await loadAll(); render(); return;
+    }
+    if((el = e.target.closest('[data-action="remove-supplier"]'))){
+      var sName = el.getAttribute("data-name");
+      if(!confirm('Hapus pemasok "'+sName+'"?')) return;
+      var d5 = await sb.from("suppliers").delete().eq("name", sName);
+      if(d5.error){ toast("Gagal menghapus.", "error"); return; }
+      await loadAll(); render(); return;
+    }
+    if((el = e.target.closest('[data-action="confirm-order"]'))){
+      var orderId = el.getAttribute("data-id");
+      var row = el.closest("tr");
+      var qtyInput = row ? row.querySelector('[data-role="order-qty"][data-id="'+orderId+'"]') : null;
+      var qtyVal = qtyInput ? Number(qtyInput.value) : NaN;
+      if(!qtyVal || qtyVal<=0){ toast("Mohon isi jumlah yang akan dibeli.", "error"); if(qtyInput) qtyInput.focus(); return; }
+      var upd = await sb.from("purchase_requests").update({ status:"Waiting for Shipment", order_quantity: qtyVal, ordered_at: new Date().toISOString() }).eq("id", orderId);
+      if(upd.error){ toast("Gagal menyimpan.", "error"); return; }
+      toast('Ditandai sudah dipesan — status menjadi "Menunggu Pengiriman".');
+      await loadAll(); render(); return;
+    }
+  }
+
+  async function handleChange(e){
+    if(e.target.classList && e.target.classList.contains("invalid")){ e.target.classList.remove("invalid"); }
+
+    if(e.target.matches && e.target.matches('select[name="plasticType"]')){
+      var sel = e.target;
+      var hint = sel.parentElement.querySelector(".spec-hint");
+      var t = findType(sel.value);
+      if(hint){ hint.textContent = (t && t.size) ? ("Ukuran: " + t.size) : ""; }
+      var form = sel.closest("form");
+      if(form){
+        var unitSel = form.querySelector('select[name="unit"]');
+        var unitHint = form.querySelector(".unit-hint");
+        var stockField = form.querySelector('[name="stock"]');
+        if(unitSel){
+          if(t){
+            var locked = t.unit || (isRollSize(t.size) ? "roll" : "kg");
+            unitSel.innerHTML = '<option value="'+locked+'" selected>'+locked+'</option>';
+            if(unitHint) unitHint.textContent = "Otomatis: " + locked + " (mengikuti jenis plastik, tidak bisa diubah)";
+          } else {
+            unitSel.innerHTML = unitOptions(unitSel.value||"kg");
+            if(unitHint) unitHint.textContent = "";
+          }
+        }
+        if(stockField && t && t.current_stock!=null && !stockField.value){
+          stockField.value = t.current_stock;
+        }
+      }
+      return;
+    }
+
+    if(e.target.matches && e.target.matches('[data-role="stock-input"]')){
+      if(!isAdmin()) return;
+      var name = e.target.getAttribute("data-name");
+      var val = e.target.value === "" ? null : Number(e.target.value);
+      var upd = await sb.from("plastic_types").update({ current_stock: val }).eq("name", name);
+      if(upd.error){ toast("Gagal menyimpan stok.", "error"); return; }
+      toast("Stok diperbarui.");
+      await loadAll();
+      // don't full re-render to avoid losing focus on the input the admin just used
+    }
+  }
+
+  function wireEvents(){
+    document.getElementById("nav").addEventListener("click", function(e){
+      var btn = e.target.closest("button.tab-btn");
+      if(btn){ activeTab = btn.getAttribute("data-tab"); render(); }
+    });
+    document.getElementById("logout-btn").addEventListener("click", async function(){
+      await sb.auth.signOut();
+      location.reload();
+    });
+    var app = document.getElementById("app");
+    app.addEventListener("submit", handleFormSubmit);
+    app.addEventListener("click", handleClick);
+    app.addEventListener("change", handleChange);
+  }
+
+  // ---------- boot ----------
+  function showApp(){
+    document.getElementById("login-screen").style.display = "none";
+    document.getElementById("app-shell").style.display = "block";
+  }
+  function showLogin(errMsg){
+    document.getElementById("app-shell").style.display = "none";
+    document.getElementById("login-screen").style.display = "flex";
+    var errEl = document.getElementById("login-error");
+    if(errMsg){ errEl.textContent = errMsg; errEl.style.display = "block"; }
+    else { errEl.style.display = "none"; }
+  }
+
+  async function boot(){
+    var res = await sb.auth.getSession();
+    session = res.data.session;
+    if(!session){ showLogin(); return; }
+    await afterLogin();
+  }
+
+  async function afterLogin(){
+    profile = await loadProfile(session.user.id);
+    await loadAll();
+    wireEvents();
+    subscribeRealtime();
+    showApp();
+    render();
+  }
+
+  document.getElementById("login-form").addEventListener("submit", async function(e){
+    e.preventDefault();
+    var username = document.getElementById("login-username").value;
+    var password = document.getElementById("login-password").value;
+    var btn = document.getElementById("login-submit");
+    btn.disabled = true; btn.textContent = "Memproses…";
+    try{
+      session = await doLogin(username, password);
+      await afterLogin();
+    } catch(err){
+      showLogin("Username atau password salah.");
+    } finally {
+      btn.disabled = false; btn.textContent = "Masuk";
+    }
+  });
+
+  boot();
+})();
+</script>
+</body>
+</html>
