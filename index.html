@@ -67,6 +67,13 @@
   th{ color:var(--text-muted); font-weight:600; background:var(--surface-2); position:sticky; top:0; }
   tr:last-child td{ border-bottom:none; }
   tr.cat-row td{ background:var(--surface-2); font-weight:700; color:var(--text-muted); text-transform:uppercase; font-size:11.5px; letter-spacing:.04em; }
+  /* keep the action column visible when a wide table scrolls sideways */
+  .table-wrap td:last-child, .table-wrap th:last-child{
+    position:sticky; right:0; background:var(--surface); z-index:1;
+    box-shadow:-7px 0 8px -7px rgba(0,0,0,.25);
+  }
+  .table-wrap th:last-child{ background:var(--surface-2); z-index:3; }
+  tr.cat-row td{ position:static !important; box-shadow:none !important; }
   .empty{ color:var(--text-muted); font-size:13.5px; padding:18px; text-align:center; }
   .badge{ display:inline-block; padding:3px 10px; border-radius:999px; font-size:12px; font-weight:600; white-space:nowrap; }
   .badge.requested{ background:var(--warning-soft); color:var(--warning); }
@@ -205,6 +212,8 @@
 
   var STATUS_LABEL = { "Requested":"Diminta", "Waiting for Shipment":"Menunggu Pengiriman", "Partially Received":"Diterima Sebagian", "Received":"Diterima" };
   function statusLabel(s){ return STATUS_LABEL[s] || s; }
+  var PO_STATUS_LABEL = { "Open":"Terbuka", "Partially Received":"Diterima Sebagian", "Closed":"Selesai" };
+  function poStatusLabel(s){ return PO_STATUS_LABEL[s] || s; }
 
   var state = {
     plasticTypes: [],      // [{id,name,category,size,unit,current_stock}]
@@ -212,7 +221,9 @@
     settings: { purchasingEmail:"", purchasingWhatsapp:"" },
     dailyUsage: [],
     purchaseRequests: [],
-    incoming: []
+    incoming: [],
+    purchaseOrders: [],    // [{id,po_number,po_date,supplier,notes,status,...}]
+    poItems: []            // [{id,po_id,plastic_type,size,unit,order_quantity,unit_price,received_quantity,request_id}]
   };
   var session = null;
   var profile = null;      // {id, display_name, role}
@@ -331,13 +342,15 @@
 
   // ---------- data loading ----------
   async function loadAll(){
-    var [pt, sup, settings, du, pr, inc] = await Promise.all([
+    var [pt, sup, settings, du, pr, inc, po, poi] = await Promise.all([
       sb.from("plastic_types").select("*").order("category").order("name"),
       sb.from("suppliers").select("*").order("name"),
       sb.from("app_settings").select("*"),
       sb.from("daily_usage").select("*").order("created_at", {ascending:false}),
       sb.from("purchase_requests").select("*").order("created_at", {ascending:false}),
       sb.from("incoming").select("*").order("created_at", {ascending:false}),
+      sb.from("purchase_orders").select("*").order("created_at", {ascending:false}),
+      sb.from("purchase_order_items").select("*").order("created_at", {ascending:true}),
     ]);
     state.plasticTypes = (pt.data||[]).sort(function(a,b){
       var ca = CATEGORY_ORDER.indexOf(a.category), cb = CATEGORY_ORDER.indexOf(b.category);
@@ -351,12 +364,39 @@
     state.dailyUsage = du.data || [];
     state.purchaseRequests = pr.data || [];
     state.incoming = inc.data || [];
+    state.purchaseOrders = po.data || [];
+    state.poItems = poi.data || [];
+  }
+
+  // ---------- PO helpers ----------
+  function itemsOfPo(poId){
+    return state.poItems.filter(function(i){ return i.po_id===poId; });
+  }
+  function poOfItem(itemId){
+    var it = state.poItems.find(function(i){ return i.id===itemId; });
+    return it ? state.purchaseOrders.find(function(p){ return p.id===it.po_id; }) : null;
+  }
+  function requestIsOnPo(requestId){
+    return state.poItems.some(function(i){ return i.request_id===requestId; });
+  }
+  function poTotal(poId){
+    return itemsOfPo(poId).reduce(function(sum,i){
+      var q = Number(i.order_quantity||0), p = Number(i.unit_price||0);
+      return sum + (q*p);
+    }, 0);
+  }
+  // A PO's status derived from its line items
+  function recomputePoStatus(poId){
+    var items = itemsOfPo(poId);
+    if(!items.length) return "Open";
+    var anyReceived = items.some(function(i){ return Number(i.received_quantity||0) > 0; });
+    return anyReceived ? "Partially Received" : "Open";
   }
 
   function subscribeRealtime(){
     channels.forEach(function(ch){ sb.removeChannel(ch); });
     channels = [];
-    ["daily_usage","purchase_requests","incoming","plastic_types","suppliers","app_settings"].forEach(function(table){
+    ["daily_usage","purchase_requests","incoming","plastic_types","suppliers","app_settings","purchase_orders","purchase_order_items"].forEach(function(table){
       var ch = sb.channel("rt-"+table)
         .on("postgres_changes", { event:"*", schema:"public", table:table }, function(){
           loadAll().then(render);
@@ -369,7 +409,7 @@
   // ---------- renderers ----------
   function renderDashboard(){
     var pending = state.purchaseRequests.filter(function(r){ return r.status==="Requested"; }).length;
-    var waiting = state.purchaseRequests.filter(function(r){ return r.status==="Waiting for Shipment"; }).length;
+    var openPoCount = state.purchaseOrders.filter(function(p){ return p.status!=="Closed"; }).length;
     var now = new Date();
     var receivedThisMonth = state.incoming.filter(function(i){
       var d = new Date(i.date_received);
@@ -381,6 +421,7 @@
     state.dailyUsage.forEach(function(u){ events.push({ ts:new Date(u.created_at).getTime(), text:"Pemakaian dicatat: "+fmtQty(u.quantity,u.unit)+" "+escapeHtml(u.plastic_type)+(u.staff_name?" oleh "+escapeHtml(u.staff_name):"") }); });
     state.purchaseRequests.forEach(function(r){ events.push({ ts:new Date(r.created_at).getTime(), text:"Permintaan pembelian: "+escapeHtml(r.plastic_type)+" (stok "+fmtQty(r.stock,r.unit)+")"+(r.requested_by?" oleh "+escapeHtml(r.requested_by):"") }); });
     state.incoming.forEach(function(i){ events.push({ ts:new Date(i.created_at).getTime(), text:"Plastik masuk: "+fmtQty(i.quantity,i.unit)+" "+escapeHtml(i.plastic_type)+(i.supplier?" dari "+escapeHtml(i.supplier):"") }); });
+    state.purchaseOrders.forEach(function(p){ var n = itemsOfPo(p.id).length; events.push({ ts:new Date(p.created_at).getTime(), text:"PO dibuat: "+escapeHtml(p.po_number)+" ke "+escapeHtml(p.supplier)+" ("+n+" item)" }); });
     events.sort(function(a,b){ return b.ts-a.ts; });
     events = events.slice(0,8);
 
@@ -388,7 +429,7 @@
     html += '<h2>Dasbor Plastik</h2><p class="subtext">Ringkasan pemakaian plastik, permintaan pembelian, dan plastik yang masuk.</p>';
     html += '<div class="grid">';
     html += '<div class="stat"><div class="num">'+pending+'</div><div class="label">Permintaan pembelian tertunda</div></div>';
-    html += '<div class="stat"><div class="num">'+waiting+'</div><div class="label">Menunggu pengiriman</div></div>';
+    html += '<div class="stat"><div class="num">'+openPoCount+'</div><div class="label">PO belum selesai</div></div>';
     html += '<div class="stat"><div class="num">'+receivedThisMonth+'</div><div class="label">Diterima bulan ini</div></div>';
     html += '<div class="stat"><div class="num">'+usageCount+'</div><div class="label">Total catatan pemakaian</div></div>';
     html += '</div>';
@@ -451,40 +492,73 @@
       html += '<div class="btn-row">' + buildNotifyLinks() + '</div></div>';
     }
 
-    html += '<h3>Pelacakan pesanan</h3>';
+    // ---- Permintaan dari staf produksi ----
+    html += '<h3>Permintaan dari produksi</h3>';
+    if(canManage){
+      html += '<div class="card" style="padding:14px 18px;">'+
+              '<div class="btn-row" style="margin-top:0;">'+
+              '<button class="btn" data-action="new-po">+ Buat PO baru</button>'+
+              '<span class="subtext" style="margin:0;align-self:center;">Pilih beberapa permintaan di bawah (boleh dari beberapa jenis plastik), lalu gabungkan jadi satu PO.</span>'+
+              '</div></div>';
+    }
     if(rows.length===0){ html += '<div class="table-wrap"><div class="empty">Belum ada permintaan pembelian.</div></div>'; }
     else {
-      html += '<div class="table-wrap"><table><thead><tr><th>Diminta</th><th>Jenis plastik</th><th>Stok saat ini</th><th>Diminta oleh</th><th>Catatan</th><th>Status</th><th>No. PO</th><th>Jumlah dibeli</th><th></th></tr></thead><tbody>';
+      html += '<div class="table-wrap"><table><thead><tr>'+
+              (canManage?'<th style="width:34px;"></th>':'')+
+              '<th>Diminta</th><th>Jenis plastik</th><th>Stok saat ini</th><th>Diminta oleh</th><th>Catatan</th><th>Status</th><th>No. PO</th><th></th></tr></thead><tbody>';
       rows.forEach(function(r){
+        var onPo = requestIsOnPo(r.id);
+        var poForReq = null;
+        if(onPo){
+          var itm = state.poItems.find(function(i){ return i.request_id===r.id; });
+          poForReq = itm ? state.purchaseOrders.find(function(p){ return p.id===itm.po_id; }) : null;
+        }
         var badgeClass = r.status==="Requested" ? "requested"
                         : (r.status==="Waiting for Shipment" ? "waiting"
                         : (r.status==="Partially Received" ? "partial" : "received"));
-        var actionCell = "";
-        if(r.status==="Requested" && canManage){
-          actionCell = '<button class="btn secondary" data-action="open-po" data-id="'+r.id+'" style="padding:6px 10px;font-size:12px;">Buat PO</button>';
-        } else if(r.po_number){
-          actionCell = '<button class="btn secondary" data-action="view-po" data-id="'+r.id+'" style="padding:6px 10px;font-size:12px;">Lihat PO</button>';
-          if(canManage && (r.status==="Waiting for Shipment" || r.status==="Partially Received")){
-            actionCell += ' <button class="btn secondary" data-action="close-po-row" data-id="'+r.id+'" style="padding:6px 10px;font-size:12px;">Tutup PO</button>';
-          }
+        var pickCell = "";
+        if(canManage){
+          pickCell = '<td>'+((r.status==="Requested" && !onPo)
+            ? '<input type="checkbox" data-role="pick-request" data-id="'+r.id+'" style="width:auto;margin:0;">'
+            : '')+'</td>';
         }
-        var qtyCell = "—";
-        if(r.order_quantity!=null){
-          qtyCell = fmtQty(r.order_quantity, r.unit);
-          var gotQ = Number(r.received_quantity||0);
-          if(gotQ>0 && r.status!=="Received"){
-            qtyCell += '<div class="prog">diterima '+escapeHtml(fmtQty(gotQ,r.unit))+' · sisa '+escapeHtml(fmtQty(Math.max(Number(r.order_quantity)-gotQ,0),r.unit))+'</div>';
-          } else if(r.status==="Received" && gotQ>0 && Math.abs(gotQ-Number(r.order_quantity))>0.001){
-            qtyCell += '<div class="prog">diterima '+escapeHtml(fmtQty(gotQ,r.unit))+'</div>';
-          }
-        }
-        html += '<tr><td>'+formatDate(r.request_date)+'</td><td>'+escapeHtml(r.plastic_type)+'</td><td>'+fmtQty(r.stock,r.unit)+'</td>'+
+        html += '<tr>'+pickCell+
+          '<td>'+formatDate(r.request_date)+'</td><td>'+escapeHtml(r.plastic_type)+'</td><td>'+fmtQty(r.stock,r.unit)+'</td>'+
           '<td>'+escapeHtml(r.requested_by||"—")+'</td><td>'+escapeHtml(r.notes||"—")+'</td>'+
           '<td><span class="badge '+badgeClass+'">'+escapeHtml(statusLabel(r.status))+'</span></td>'+
-          '<td>'+(r.po_number?escapeHtml(r.po_number):"—")+'</td>'+
-          '<td>'+qtyCell+'</td>'+
-          '<td>'+actionCell+((r.status==="Requested" && isAdmin()) ? ' <button class="btn-icon" data-action="delete-request" data-id="'+r.id+'" title="Hapus">✕</button>' : '')+'</td>'+
+          '<td>'+(poForReq?('<button class="btn-icon" data-action="view-po" data-id="'+poForReq.id+'" title="Lihat PO" style="color:var(--accent);">'+escapeHtml(poForReq.po_number)+'</button>'):"—")+'</td>'+
+          '<td>'+((r.status==="Requested" && !onPo && isAdmin()) ? '<button class="btn-icon" data-action="delete-request" data-id="'+r.id+'" title="Hapus">✕</button>' : '')+'</td>'+
           '</tr>';
+      });
+      html += "</tbody></table></div>";
+    }
+
+    // ---- Daftar PO ----
+    html += '<h3>Daftar Purchase Order</h3>';
+    var pos = state.purchaseOrders.slice();
+    if(pos.length===0){ html += '<div class="table-wrap"><div class="empty">Belum ada PO.</div></div>'; }
+    else {
+      html += '<div class="table-wrap"><table><thead><tr><th>No. PO</th><th>Tanggal</th><th>Pemasok</th><th>Item</th><th>Total</th><th>Status</th><th></th></tr></thead><tbody>';
+      pos.forEach(function(p){
+        var items = itemsOfPo(p.id);
+        var badgeClass = p.status==="Open" ? "waiting" : (p.status==="Partially Received" ? "partial" : "received");
+        var itemSummary = items.map(function(i){
+          var got = Number(i.received_quantity||0);
+          var line = i.plastic_type + " (" + fmtQty(i.order_quantity, i.unit) + ")";
+          if(got>0 && p.status!=="Closed"){ line += " · diterima " + fmtQty(got, i.unit); }
+          return escapeHtml(line);
+        }).join("<br>");
+        var actions = '<button class="btn secondary" data-action="view-po" data-id="'+p.id+'" style="padding:6px 10px;font-size:12px;">Lihat PO</button>';
+        if(canManage && p.status!=="Closed"){
+          actions += ' <button class="btn secondary" data-action="close-po-row" data-id="'+p.id+'" style="padding:6px 10px;font-size:12px;">Tutup PO</button>';
+        }
+        html += '<tr><td><strong>'+escapeHtml(p.po_number)+'</strong></td><td>'+formatDate(p.po_date)+'</td>'+
+          '<td>'+escapeHtml(p.supplier)+'</td>'+
+          '<td style="white-space:normal;">'+(itemSummary||"—")+'</td>'+
+          '<td>'+escapeHtml(fmtRupiah(poTotal(p.id)))+'</td>'+
+          '<td><span class="badge '+badgeClass+'">'+escapeHtml(poStatusLabel(p.status))+'</span>'+
+          (p.close_note?('<div class="prog">'+escapeHtml(p.close_note)+'</div>'):'')+'</td>'+
+          '<td>'+actions+'</td></tr>';
       });
       html += "</tbody></table></div>";
     }
@@ -493,17 +567,22 @@
 
   function renderIncoming(){
     var rows = state.incoming.slice().sort(function(a,b){ return new Date(b.created_at)-new Date(a.created_at); });
-    var waitingRequests = state.purchaseRequests.filter(function(r){
-      return r.status==="Waiting for Shipment" || r.status==="Partially Received";
+    // open PO line items, grouped by PO
+    var openPos = state.purchaseOrders.filter(function(p){ return p.status!=="Closed"; });
+    var linkOptions = '<option value="">— tidak terhubung ke PO —</option>';
+    openPos.forEach(function(p){
+      var items = itemsOfPo(p.id);
+      if(!items.length) return;
+      linkOptions += '<optgroup label="'+escapeHtml(p.po_number+" — "+p.supplier)+'">';
+      items.forEach(function(i){
+        var ord = Number(i.order_quantity||0), got = Number(i.received_quantity||0);
+        var remain = Math.max(ord-got, 0);
+        var label = i.plastic_type + " — " + fmtQty(ord, i.unit) +
+                    (got>0 ? (" [sudah " + fmtQty(got,i.unit) + ", sisa " + fmtQty(remain,i.unit) + "]") : "");
+        linkOptions += '<option value="'+i.id+'">'+escapeHtml(label)+'</option>';
+      });
+      linkOptions += '</optgroup>';
     });
-    var linkOptions = '<option value="">— tidak terhubung ke PO —</option>' + waitingRequests.map(function(r){
-      var qty = r.order_quantity!=null ? r.order_quantity : r.stock;
-      var got = Number(r.received_quantity||0);
-      var label = (r.po_number ? (r.po_number + " — ") : "") + r.plastic_type + " — " + fmtQty(qty,r.unit) +
-                  (got>0 ? (" [sudah " + fmtQty(got,r.unit) + ", sisa " + fmtQty(Math.max(qty-got,0),r.unit) + "]") : "") +
-                  (r.supplier ? (" (" + r.supplier + ")") : "");
-      return '<option value="'+r.id+'">'+escapeHtml(label)+'</option>';
-    }).join("");
     var html = "";
     html += '<h2>Plastik Masuk</h2><p class="role-hint">Diisi oleh: Staf pembelian, saat pemasok mengirim plastik</p>';
     html += '<div class="card"><form class="form-grid" data-form="incoming">';
@@ -518,18 +597,20 @@
     html += '<div class="field full" id="close-po-wrap" style="display:none;">'+
             '<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">'+
             '<input type="checkbox" name="closePo" style="width:auto;margin:0;"> '+
-            'Tutup PO ini — pengiriman dianggap selesai</label>'+
-            '<small class="spec-hint">Centang jika pemasok sudah mengirim semuanya (atau selisihnya masih bisa diterima). '+
-            'Biarkan kosong jika masih ada sisa kiriman berikutnya.</small></div>';
+            'Tutup seluruh PO ini — pengiriman dianggap selesai</label>'+
+            '<small class="spec-hint">Centang jika semua item di PO ini sudah dikirim (atau selisihnya masih bisa diterima). '+
+            'Biarkan kosong jika masih ada item atau sisa kiriman berikutnya.</small></div>';
     html += '<div class="field"><button class="btn" type="submit">Catat plastik masuk</button></div>';
     html += '</form></div>';
     html += '<h3>Riwayat plastik masuk</h3>';
     if(rows.length===0){ html += '<div class="table-wrap"><div class="empty">Belum ada plastik masuk yang dicatat.</div></div>'; }
     else {
-      html += '<div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Jenis plastik</th><th>Jumlah</th><th>Pemasok</th><th>Diterima oleh</th><th>Pesanan terhubung</th><th></th></tr></thead><tbody>';
+      html += '<div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Jenis plastik</th><th>Jumlah</th><th>Pemasok</th><th>Diterima oleh</th><th>No. PO</th><th></th></tr></thead><tbody>';
       rows.forEach(function(r){
+        var srcPo = r.po_item_id ? poOfItem(r.po_item_id) : null;
         html += '<tr><td>'+formatDate(r.date_received)+'</td><td>'+escapeHtml(r.plastic_type)+'</td><td>'+fmtQty(r.quantity,r.unit)+'</td>'+
-          '<td>'+escapeHtml(r.supplier||"—")+'</td><td>'+escapeHtml(r.received_by||"—")+'</td><td>'+(r.linked_request_id?"Ya":"—")+'</td>'+
+          '<td>'+escapeHtml(r.supplier||"—")+'</td><td>'+escapeHtml(r.received_by||"—")+'</td>'+
+          '<td>'+(srcPo?('<button class="btn-icon" data-action="view-po" data-id="'+srcPo.id+'" style="color:var(--accent);">'+escapeHtml(srcPo.po_number)+'</button>'):"—")+'</td>'+
           '<td>'+(isAdmin() ? '<button class="btn-icon" data-action="delete-incoming" data-id="'+r.id+'" title="Hapus">✕</button>' : '')+'</td></tr>';
       });
       html += "</tbody></table></div>";
@@ -632,50 +713,105 @@
     return "Rp " + Number(n).toLocaleString("id-ID", {minimumFractionDigits:0, maximumFractionDigits:2});
   }
 
-  function openPoModal(requestId, mode){
-    var r = state.purchaseRequests.find(function(x){ return x.id===requestId; });
-    if(!r) return;
-    var overlay = document.getElementById("po-overlay");
-    var formWrap = document.getElementById("po-form-wrap");
-    var foot = document.getElementById("po-foot");
-    document.getElementById("po-modal-title").textContent = (mode==="view") ? ("Purchase Order " + (r.po_number||"")) : "Buat Purchase Order";
+  // draft line items while building a PO (in-memory only)
+  var poDraft = { supplier:"", notes:"", items:[] };
 
-    if(mode==="create"){
-      formWrap.innerHTML =
-        '<form class="form-grid" data-form="po" data-id="'+r.id+'" style="margin-bottom:18px;">'+
-          '<div class="field full"><label>Jenis plastik (dari permintaan staf)</label>'+
-            '<input type="text" value="'+escapeHtml(r.plastic_type)+'" disabled></div>'+
-          '<div class="field"><label>Pemasok</label><select name="poSupplier">'+supplierOptions("")+'</select></div>'+
-          '<div class="field"><label>Jumlah dibeli ('+escapeHtml(r.unit)+')</label>'+
-            '<input type="number" step="0.01" min="0" name="poQty" placeholder="0.00"></div>'+
-          '<div class="field"><label>Harga per '+escapeHtml(r.unit)+' (Rp)</label>'+
-            '<input type="number" step="0.01" min="0" name="poPrice" placeholder="0"></div>'+
-          '<div class="field full"><label>Catatan untuk pemasok (opsional)</label>'+
-            '<textarea name="poNotes" placeholder="cth: mohon kirim sebelum tanggal 10"></textarea></div>'+
-          '<div class="field"><button class="btn" type="submit">Buat PO &amp; tandai dipesan</button></div>'+
-        '</form>';
-      document.getElementById("po-doc").innerHTML = "";
-      foot.innerHTML = '<button class="btn secondary" data-action="close-po">Batal</button>';
+  function openPoBuilder(preselectRequestIds){
+    poDraft = { supplier:"", notes:"", items:[] };
+    (preselectRequestIds||[]).forEach(function(rid){
+      var r = state.purchaseRequests.find(function(x){ return x.id===rid; });
+      if(!r) return;
+      var t = findType(r.plastic_type);
+      poDraft.items.push({
+        key: uid(),
+        plastic_type: r.plastic_type,
+        size: (t && t.size) ? t.size : "",
+        unit: r.unit || "kg",
+        order_quantity: "",
+        unit_price: "",
+        request_id: r.id,
+        requested_by: r.requested_by || "",
+        stock: r.stock
+      });
+    });
+    document.getElementById("po-modal-title").textContent = "Buat Purchase Order";
+    document.getElementById("po-doc").innerHTML = "";
+    document.getElementById("po-foot").innerHTML =
+      '<button class="btn secondary" data-action="close-po">Batal</button>'+
+      '<button class="btn" data-action="save-po">Simpan PO</button>';
+    renderPoBuilder();
+    document.getElementById("po-overlay").classList.add("open");
+  }
+
+  function renderPoBuilder(){
+    var h = "";
+    h += '<div class="form-grid" style="margin-bottom:16px;">';
+    h += '<div class="field"><label>Pemasok</label><select data-role="po-supplier">'+supplierOptions(poDraft.supplier)+'</select></div>';
+    h += '<div class="field full"><label>Catatan untuk pemasok (opsional)</label>'+
+         '<textarea data-role="po-notes" placeholder="cth: mohon kirim sebelum tanggal 10">'+escapeHtml(poDraft.notes)+'</textarea></div>';
+    h += '</div>';
+
+    h += '<h3 style="margin-top:6px;">Item dalam PO ini</h3>';
+    if(poDraft.items.length===0){
+      h += '<div class="table-wrap"><div class="empty">Belum ada item. Tambahkan di bawah.</div></div>';
     } else {
-      formWrap.innerHTML = "";
-      document.getElementById("po-doc").innerHTML = renderPoDoc(r);
-      foot.innerHTML = '<button class="btn secondary" data-action="close-po">Tutup</button>'+
-                       '<button class="btn" data-action="print-po">🖨️ Cetak / Simpan PDF</button>';
+      h += '<div class="table-wrap"><table><thead><tr>'+
+           '<th>Jenis plastik</th><th>Ukuran</th><th style="width:110px;">Jumlah</th>'+
+           '<th style="width:130px;">Harga satuan</th><th style="width:120px;">Total</th><th style="width:40px;"></th>'+
+           '</tr></thead><tbody>';
+      poDraft.items.forEach(function(it){
+        var q = Number(it.order_quantity||0), p = Number(it.unit_price||0);
+        var lineTotal = (q&&p) ? q*p : 0;
+        h += '<tr>'+
+          '<td>'+escapeHtml(it.plastic_type)+
+            (it.request_id?('<div class="prog">dari permintaan '+escapeHtml(it.requested_by||"staf")+'</div>'):'<div class="prog">tambahan manual</div>')+'</td>'+
+          '<td>'+escapeHtml(it.size||"—")+'</td>'+
+          '<td><input type="number" step="0.01" min="0" data-role="item-qty" data-key="'+it.key+'" value="'+escapeHtml(it.order_quantity)+'" placeholder="0" style="width:95px;"> <span class="prog">'+escapeHtml(it.unit)+'</span></td>'+
+          '<td><input type="number" step="0.01" min="0" data-role="item-price" data-key="'+it.key+'" value="'+escapeHtml(it.unit_price)+'" placeholder="0" style="width:115px;"></td>'+
+          '<td>'+escapeHtml(lineTotal?fmtRupiah(lineTotal):"—")+'</td>'+
+          '<td><button class="btn-icon" data-action="remove-po-item" data-key="'+it.key+'" title="Hapus">✕</button></td>'+
+          '</tr>';
+      });
+      var grand = poDraft.items.reduce(function(s,it){
+        var q=Number(it.order_quantity||0), p=Number(it.unit_price||0);
+        return s + ((q&&p)?q*p:0);
+      },0);
+      h += '<tr class="po-total-row"><td colspan="4" style="text-align:right;font-weight:700;">TOTAL</td>'+
+           '<td style="font-weight:700;">'+escapeHtml(fmtRupiah(grand))+'</td><td></td></tr>';
+      h += '</tbody></table></div>';
     }
-    overlay.classList.add("open");
+
+    // add ad-hoc item
+    h += '<div class="card" style="margin-top:16px;">';
+    h += '<h3 style="margin-top:0;">Tambah item manual</h3>';
+    h += '<p class="subtext">Untuk barang yang belum diminta staf (mis. mencoba jenis baru).</p>';
+    h += '<div class="form-grid">';
+    h += '<div class="field full"><label>Jenis plastik</label><select data-role="adhoc-type">'+typeOptions("")+'</select></div>';
+    h += '<div class="field"><button class="btn secondary" data-action="add-po-item">+ Tambah ke PO</button></div>';
+    h += '</div></div>';
+
+    document.getElementById("po-form-wrap").innerHTML = h;
+  }
+
+  function openPoView(poId){
+    var p = state.purchaseOrders.find(function(x){ return x.id===poId; });
+    if(!p) return;
+    document.getElementById("po-modal-title").textContent = "Purchase Order " + p.po_number;
+    document.getElementById("po-form-wrap").innerHTML = "";
+    document.getElementById("po-doc").innerHTML = renderPoDoc(p);
+    document.getElementById("po-foot").innerHTML =
+      '<button class="btn secondary" data-action="close-po">Tutup</button>'+
+      '<button class="btn" data-action="print-po">🖨️ Cetak / Simpan PDF</button>';
+    document.getElementById("po-overlay").classList.add("open");
   }
 
   function closePoModal(){
     document.getElementById("po-overlay").classList.remove("open");
   }
 
-  function renderPoDoc(r){
-    var t = findType(r.plastic_type);
-    var qty = r.order_quantity;
-    var price = r.unit_price;
-    var total = (qty!=null && price!=null) ? (Number(qty)*Number(price)) : null;
-    var poDate = r.ordered_at ? new Date(r.ordered_at) : new Date();
-    var dateStr = poDate.toLocaleDateString("id-ID",{day:"numeric",month:"long",year:"numeric"});
+  function renderPoDoc(p){
+    var items = itemsOfPo(p.id);
+    var dateStr = new Date(p.po_date + "T00:00:00").toLocaleDateString("id-ID",{day:"numeric",month:"long",year:"numeric"});
 
     var h = "";
     h += '<div class="po-header">';
@@ -688,11 +824,10 @@
 
     h += '<div class="po-meta">';
     h += '<div class="blk"><div><span class="lbl">Kepada (Pemasok):</span></div>'+
-         '<div><strong>'+escapeHtml(r.supplier||"—")+'</strong></div></div>';
+         '<div><strong>'+escapeHtml(p.supplier||"—")+'</strong></div></div>';
     h += '<div class="blk" style="text-align:right;">'+
-         '<div><span class="lbl">No. PO:</span> <strong>'+escapeHtml(r.po_number||"—")+'</strong></div>'+
+         '<div><span class="lbl">No. PO:</span> <strong>'+escapeHtml(p.po_number)+'</strong></div>'+
          '<div><span class="lbl">Tanggal:</span> '+escapeHtml(dateStr)+'</div>'+
-         '<div><span class="lbl">Diminta oleh:</span> '+escapeHtml(r.requested_by||"—")+'</div>'+
          '</div>';
     h += '</div>';
 
@@ -700,21 +835,27 @@
          '<th style="width:38px;">No</th><th>Jenis Plastik</th><th>Ukuran</th>'+
          '<th class="num">Jumlah</th><th class="num">Harga Satuan</th><th class="num">Total</th>'+
          '</tr></thead><tbody>';
-    h += '<tr><td>1</td><td>'+escapeHtml(r.plastic_type)+'</td><td>'+escapeHtml((t&&t.size)?t.size:"—")+'</td>'+
-         '<td class="num">'+escapeHtml(fmtQty(qty, r.unit))+'</td>'+
-         '<td class="num">'+escapeHtml(fmtRupiah(price))+'</td>'+
-         '<td class="num">'+escapeHtml(fmtRupiah(total))+'</td></tr>';
+    var grand = 0;
+    items.forEach(function(it, idx){
+      var q = Number(it.order_quantity||0), pr = Number(it.unit_price||0);
+      var lineTotal = q*pr;
+      grand += lineTotal;
+      h += '<tr><td>'+(idx+1)+'</td><td>'+escapeHtml(it.plastic_type)+'</td><td>'+escapeHtml(it.size||"—")+'</td>'+
+           '<td class="num">'+escapeHtml(fmtQty(it.order_quantity, it.unit))+'</td>'+
+           '<td class="num">'+escapeHtml(fmtRupiah(it.unit_price))+'</td>'+
+           '<td class="num">'+escapeHtml(fmtRupiah(lineTotal))+'</td></tr>';
+    });
     h += '<tr class="po-total-row"><td colspan="5" class="num">TOTAL</td>'+
-         '<td class="num">'+escapeHtml(fmtRupiah(total))+'</td></tr>';
+         '<td class="num">'+escapeHtml(fmtRupiah(grand))+'</td></tr>';
     h += '</tbody></table>';
 
-    if(r.notes){
-      h += '<div class="po-notes"><strong>Catatan:</strong> '+escapeHtml(r.notes)+'</div>';
+    if(p.notes){
+      h += '<div class="po-notes"><strong>Catatan:</strong> '+escapeHtml(p.notes)+'</div>';
     }
 
     h += '<div class="po-sign">'+
          '<div class="box"><div>Hormat kami,</div><div class="line">'+escapeHtml(COMPANY.name)+'</div></div>'+
-         '<div class="box"><div>Diterima oleh,</div><div class="line">'+escapeHtml(r.supplier||"Pemasok")+'</div></div>'+
+         '<div class="box"><div>Diterima oleh,</div><div class="line">'+escapeHtml(p.supplier||"Pemasok")+'</div></div>'+
          '</div>';
     return h;
   }
@@ -786,41 +927,57 @@
       } else if(kind==="incoming"){
         if(!data.plasticType){ toast("Mohon pilih jenis plastik terlebih dahulu.", "error"); markInvalid(form,"plasticType"); return; }
         if(!data.quantity || Number(data.quantity)<=0){ toast("Mohon isi jumlah (harus lebih dari 0).", "error"); markInvalid(form,"quantity"); return; }
+        var poItem = data.linkedRequestId ? state.poItems.find(function(i){ return i.id===data.linkedRequestId; }) : null;
         var entry = {
           date_received: data.dateReceived||todayIso(), plastic_type: data.plasticType, quantity: Number(data.quantity),
           unit: data.unit||"kg", supplier: data.supplier||"", received_by: data.receivedBy||"",
-          linked_request_id: data.linkedRequestId||null, created_by: session.user.id
+          po_item_id: poItem ? poItem.id : null,
+          linked_request_id: (poItem && poItem.request_id) ? poItem.request_id : null,
+          created_by: session.user.id
         };
         var insInc = await sb.from("incoming").insert(entry).select().single();
         if(insInc.error) throw insInc.error;
 
         var closeMsg = "";
-        if(data.linkedRequestId){
-          var linkedReq = state.purchaseRequests.find(function(x){ return x.id===data.linkedRequestId; });
-          var already = linkedReq && linkedReq.received_quantity ? Number(linkedReq.received_quantity) : 0;
-          var newTotal = already + Number(data.quantity);
+        if(poItem){
+          var newTotal = Number(poItem.received_quantity||0) + Number(data.quantity);
           var wantClose = form.querySelector('[name="closePo"]') && form.querySelector('[name="closePo"]').checked;
 
-          var reqPatch = {
-            received_quantity: newTotal,
-            received_at: new Date().toISOString(),
-            incoming_id: insInc.data.id
-          };
+          var updItem = await sb.from("purchase_order_items")
+            .update({ received_quantity: newTotal }).eq("id", poItem.id);
+          if(updItem.error) throw updItem.error;
+
+          var parentPo = state.purchaseOrders.find(function(p){ return p.id===poItem.po_id; });
           if(wantClose){
-            reqPatch.status = "Received";
-            reqPatch.closed_at = new Date().toISOString();
-            var ordered = linkedReq && linkedReq.order_quantity!=null ? Number(linkedReq.order_quantity) : null;
-            if(ordered!=null && Math.abs(newTotal - ordered) > 0.001){
-              reqPatch.close_note = "Ditutup manual. Dipesan " + fmtQty(ordered, entry.unit) +
-                                    ", diterima " + fmtQty(newTotal, entry.unit) + ".";
+            // close the whole PO
+            var siblings = itemsOfPo(poItem.po_id);
+            var shortfalls = [];
+            siblings.forEach(function(si){
+              var ord = Number(si.order_quantity||0);
+              var got = (si.id===poItem.id) ? newTotal : Number(si.received_quantity||0);
+              if(Math.abs(ord-got) > 0.001){ shortfalls.push(si.plastic_type + " (" + fmtQty(got,si.unit) + " dari " + fmtQty(ord,si.unit) + ")"); }
+            });
+            var poPatch = { status:"Closed", closed_at:new Date().toISOString() };
+            if(shortfalls.length){ poPatch.close_note = "Ditutup manual: " + shortfalls.join("; ") + "."; }
+            var updPo = await sb.from("purchase_orders").update(poPatch).eq("id", poItem.po_id);
+            if(updPo.error) throw updPo.error;
+
+            var closeReqIds = siblings.filter(function(si){ return si.request_id; }).map(function(si){ return si.request_id; });
+            if(closeReqIds.length){
+              await sb.from("purchase_requests").update({ status:"Received", closed_at:new Date().toISOString() }).in("id", closeReqIds);
             }
-            closeMsg = " PO ditutup (selesai).";
+            closeMsg = " PO " + (parentPo?parentPo.po_number:"") + " ditutup (selesai).";
           } else {
-            reqPatch.status = "Partially Received";
-            closeMsg = " PO masih terbuka — total diterima " + fmtQty(newTotal, entry.unit) + ".";
+            if(parentPo && parentPo.status==="Open"){
+              await sb.from("purchase_orders").update({ status:"Partially Received" }).eq("id", parentPo.id);
+            }
+            if(poItem.request_id){
+              await sb.from("purchase_requests").update({ status:"Partially Received", received_at:new Date().toISOString() }).eq("id", poItem.request_id);
+            }
+            var ordQ = Number(poItem.order_quantity||0);
+            closeMsg = " PO masih terbuka — " + poItem.plastic_type + ": diterima " + fmtQty(newTotal, poItem.unit) +
+                       " dari " + fmtQty(ordQ, poItem.unit) + ".";
           }
-          var upd = await sb.from("purchase_requests").update(reqPatch).eq("id", data.linkedRequestId);
-          if(upd.error) throw upd.error;
         }
         toast("Plastik masuk telah dicatat." + closeMsg);
         form.reset();
@@ -845,31 +1002,6 @@
         toast("Pemasok ditambahkan.");
         form.reset();
         await loadAll(); render();
-      } else if(kind==="po"){
-        var reqId = form.getAttribute("data-id");
-        if(!data.poSupplier){ toast("Mohon pilih pemasok.", "error"); markInvalid(form,"poSupplier"); return; }
-        if(!data.poQty || Number(data.poQty)<=0){ toast("Mohon isi jumlah yang akan dibeli.", "error"); markInvalid(form,"poQty"); return; }
-        if(!data.poPrice || Number(data.poPrice)<=0){ toast("Mohon isi harga satuan.", "error"); markInvalid(form,"poPrice"); return; }
-
-        var poRes = await sb.rpc("next_po_number");
-        if(poRes.error) throw poRes.error;
-        var poNumber = poRes.data;
-
-        var patch = {
-          status: "Waiting for Shipment",
-          order_quantity: Number(data.poQty),
-          unit_price: Number(data.poPrice),
-          supplier: data.poSupplier,
-          po_number: poNumber,
-          ordered_at: new Date().toISOString()
-        };
-        if(data.poNotes && data.poNotes.trim()){ patch.notes = data.poNotes.trim(); }
-        var updPo = await sb.from("purchase_requests").update(patch).eq("id", reqId);
-        if(updPo.error) throw updPo.error;
-
-        toast("PO " + poNumber + " dibuat — status menjadi \"Menunggu Pengiriman\".");
-        await loadAll(); render();
-        openPoModal(reqId, "view");
       } else if(kind==="save-settings"){
         var email = (data.purchasingEmail||"").trim();
         var wa = (data.purchasingWhatsapp||"").trim();
@@ -920,28 +1052,117 @@
       if(d5.error){ toast("Gagal menghapus.", "error"); return; }
       await loadAll(); render(); return;
     }
-    if((el = e.target.closest('[data-action="open-po"]'))){
-      openPoModal(el.getAttribute("data-id"), "create"); return;
+    if((el = e.target.closest('[data-action="new-po"]'))){
+      var picked = Array.prototype.slice.call(document.querySelectorAll('[data-role="pick-request"]:checked'))
+        .map(function(cb){ return cb.getAttribute("data-id"); });
+      openPoBuilder(picked);
+      return;
     }
     if((el = e.target.closest('[data-action="view-po"]'))){
-      openPoModal(el.getAttribute("data-id"), "view"); return;
+      openPoView(el.getAttribute("data-id")); return;
+    }
+    if((el = e.target.closest('[data-action="add-po-item"]'))){
+      var typeSel = document.querySelector('[data-role="adhoc-type"]');
+      var tname = typeSel ? typeSel.value : "";
+      if(!tname){ toast("Pilih jenis plastik dulu.", "error"); return; }
+      if(poDraft.items.some(function(i){ return i.plastic_type===tname; })){
+        toast("Jenis itu sudah ada di PO ini.", "error"); return;
+      }
+      var t = findType(tname);
+      poDraft.items.push({
+        key: uid(), plastic_type: tname,
+        size: (t&&t.size)?t.size:"", unit: (t&&t.unit)?t.unit:"kg",
+        order_quantity:"", unit_price:"", request_id:null, requested_by:"", stock:null
+      });
+      renderPoBuilder();
+      return;
+    }
+    if((el = e.target.closest('[data-action="remove-po-item"]'))){
+      var k = el.getAttribute("data-key");
+      poDraft.items = poDraft.items.filter(function(i){ return i.key!==k; });
+      renderPoBuilder();
+      return;
+    }
+    if((el = e.target.closest('[data-action="save-po"]'))){
+      if(!poDraft.supplier){ toast("Mohon pilih pemasok.", "error"); return; }
+      if(poDraft.items.length===0){ toast("PO harus punya minimal satu item.", "error"); return; }
+      var bad = poDraft.items.find(function(i){
+        return !i.order_quantity || Number(i.order_quantity)<=0 || !i.unit_price || Number(i.unit_price)<=0;
+      });
+      if(bad){ toast("Mohon isi jumlah dan harga untuk semua item.", "error"); return; }
+
+      el.disabled = true;
+      try{
+        var poNumRes = await sb.rpc("next_po_number");
+        if(poNumRes.error) throw poNumRes.error;
+        var poIns = await sb.from("purchase_orders").insert({
+          po_number: poNumRes.data,
+          po_date: todayIso(),
+          supplier: poDraft.supplier,
+          notes: poDraft.notes || "",
+          status: "Open",
+          created_by: session.user.id
+        }).select().single();
+        if(poIns.error) throw poIns.error;
+
+        var itemRows = poDraft.items.map(function(i){
+          return {
+            po_id: poIns.data.id,
+            plastic_type: i.plastic_type,
+            size: i.size||"",
+            unit: i.unit||"kg",
+            order_quantity: Number(i.order_quantity),
+            unit_price: Number(i.unit_price),
+            request_id: i.request_id || null
+          };
+        });
+        var itemsIns = await sb.from("purchase_order_items").insert(itemRows);
+        if(itemsIns.error) throw itemsIns.error;
+
+        // mark linked staff requests as ordered
+        var reqIds = poDraft.items.filter(function(i){ return i.request_id; }).map(function(i){ return i.request_id; });
+        if(reqIds.length){
+          var updReq = await sb.from("purchase_requests")
+            .update({ status:"Waiting for Shipment", ordered_at:new Date().toISOString(), supplier: poDraft.supplier, po_number: poNumRes.data })
+            .in("id", reqIds);
+          if(updReq.error) throw updReq.error;
+        }
+
+        toast("PO " + poNumRes.data + " dibuat.");
+        await loadAll(); render();
+        openPoView(poIns.data.id);
+      } catch(err){
+        console.error(err);
+        toast("Gagal menyimpan PO ("+(err.message||"error")+").", "error");
+      } finally {
+        el.disabled = false;
+      }
+      return;
     }
     if((el = e.target.closest('[data-action="close-po-row"]'))){
       var closeId = el.getAttribute("data-id");
-      var cr = state.purchaseRequests.find(function(x){ return x.id===closeId; });
-      if(!cr) return;
-      var orderedC = cr.order_quantity!=null ? Number(cr.order_quantity) : Number(cr.stock||0);
-      var gotC = Number(cr.received_quantity||0);
-      var msg = "Tutup PO " + (cr.po_number||"") + "?\n\nDipesan: " + fmtQty(orderedC, cr.unit) +
-                "\nDiterima: " + fmtQty(gotC, cr.unit);
-      if(Math.abs(orderedC-gotC) > 0.001){ msg += "\n\nSelisih " + fmtQty(Math.abs(orderedC-gotC), cr.unit) + " akan dicatat sebagai ditutup manual."; }
+      var p = state.purchaseOrders.find(function(x){ return x.id===closeId; });
+      if(!p) return;
+      var items = itemsOfPo(p.id);
+      var msg = "Tutup PO " + p.po_number + "?\n\n";
+      var shortfalls = [];
+      items.forEach(function(i){
+        var ord = Number(i.order_quantity||0), got = Number(i.received_quantity||0);
+        msg += "• " + i.plastic_type + ": dipesan " + fmtQty(ord,i.unit) + ", diterima " + fmtQty(got,i.unit) + "\n";
+        if(Math.abs(ord-got) > 0.001){ shortfalls.push(i.plastic_type + " (" + fmtQty(got,i.unit) + " dari " + fmtQty(ord,i.unit) + ")"); }
+      });
+      if(shortfalls.length){ msg += "\nSelisih akan dicatat sebagai ditutup manual."; }
       if(!confirm(msg)) return;
-      var patchC = { status:"Received", closed_at:new Date().toISOString() };
-      if(Math.abs(orderedC-gotC) > 0.001){
-        patchC.close_note = "Ditutup manual. Dipesan " + fmtQty(orderedC, cr.unit) + ", diterima " + fmtQty(gotC, cr.unit) + ".";
-      }
-      var updC = await sb.from("purchase_requests").update(patchC).eq("id", closeId);
+
+      var patchC = { status:"Closed", closed_at:new Date().toISOString() };
+      if(shortfalls.length){ patchC.close_note = "Ditutup manual: " + shortfalls.join("; ") + "."; }
+      var updC = await sb.from("purchase_orders").update(patchC).eq("id", closeId);
       if(updC.error){ toast("Gagal menutup PO.", "error"); return; }
+
+      var reqIds2 = items.filter(function(i){ return i.request_id; }).map(function(i){ return i.request_id; });
+      if(reqIds2.length){
+        await sb.from("purchase_requests").update({ status:"Received", closed_at:new Date().toISOString() }).in("id", reqIds2);
+      }
       toast("PO ditutup.");
       await loadAll(); render(); return;
     }
@@ -949,6 +1170,26 @@
 
   async function handleChange(e){
     if(e.target.classList && e.target.classList.contains("invalid")){ e.target.classList.remove("invalid"); }
+
+    // ---- PO builder fields (draft only, no DB writes) ----
+    if(e.target.matches && e.target.matches('[data-role="po-supplier"]')){
+      poDraft.supplier = e.target.value; return;
+    }
+    if(e.target.matches && e.target.matches('[data-role="po-notes"]')){
+      poDraft.notes = e.target.value; return;
+    }
+    if(e.target.matches && e.target.matches('[data-role="item-qty"]')){
+      var kq = e.target.getAttribute("data-key");
+      var iq = poDraft.items.find(function(i){ return i.key===kq; });
+      if(iq){ iq.order_quantity = e.target.value; renderPoBuilder(); }
+      return;
+    }
+    if(e.target.matches && e.target.matches('[data-role="item-price"]')){
+      var kp = e.target.getAttribute("data-key");
+      var ip = poDraft.items.find(function(i){ return i.key===kp; });
+      if(ip){ ip.unit_price = e.target.value; renderPoBuilder(); }
+      return;
+    }
 
     if(e.target.matches && e.target.matches('select[name="plasticType"]')){
       var sel = e.target;
@@ -991,27 +1232,29 @@
     if(e.target.matches && e.target.matches('select[name="linkedRequestId"]')){
       var linkSel = e.target;
       var linkForm = linkSel.closest("form");
-      var req = state.purchaseRequests.find(function(x){ return x.id===linkSel.value; });
+      var item = state.poItems.find(function(x){ return x.id===linkSel.value; });
       var closeWrap = document.getElementById("close-po-wrap");
       var progEl = linkForm ? linkForm.querySelector(".po-progress") : null;
 
-      if(linkForm && req){
+      if(linkForm && item){
+        var parentPo = state.purchaseOrders.find(function(p){ return p.id===item.po_id; });
         var typeSel = linkForm.querySelector('select[name="plasticType"]');
-        if(typeSel){ typeSel.value = req.plastic_type; typeSel.dispatchEvent(new Event("change", {bubbles:true})); }
+        if(typeSel){ typeSel.value = item.plastic_type; typeSel.dispatchEvent(new Event("change", {bubbles:true})); }
         var supF = linkForm.querySelector('select[name="supplier"]');
-        if(supF && req.supplier){ supF.value = req.supplier; }
+        if(supF && parentPo && parentPo.supplier){ supF.value = parentPo.supplier; }
 
-        var ordered = req.order_quantity!=null ? Number(req.order_quantity) : Number(req.stock||0);
-        var got = Number(req.received_quantity||0);
+        var ordered = Number(item.order_quantity||0);
+        var got = Number(item.received_quantity||0);
         var remaining = Math.max(ordered - got, 0);
 
         var qtyF = linkForm.querySelector('[name="quantity"]');
         if(qtyF){ qtyF.value = remaining > 0 ? remaining : ""; }
 
         if(progEl){
-          progEl.textContent = "Dipesan " + fmtQty(ordered, req.unit) +
-                               " · sudah diterima " + fmtQty(got, req.unit) +
-                               " · sisa " + fmtQty(remaining, req.unit);
+          progEl.textContent = (parentPo?parentPo.po_number+" · ":"") + item.plastic_type +
+                               " — dipesan " + fmtQty(ordered, item.unit) +
+                               " · sudah diterima " + fmtQty(got, item.unit) +
+                               " · sisa " + fmtQty(remaining, item.unit);
         }
         if(closeWrap){ closeWrap.style.display = ""; }
       } else {
@@ -1058,6 +1301,7 @@
       if(e.target === overlay){ closePoModal(); return; }
       if(e.target.closest('[data-action="close-po"]')){ closePoModal(); return; }
       if(e.target.closest('[data-action="print-po"]')){ window.print(); return; }
+      handleClick(e);
     });
     document.addEventListener("keydown", function(e){
       if(e.key === "Escape"){ closePoModal(); }
