@@ -282,6 +282,8 @@
   }
   function role(){ return profile ? profile.role : "staff"; }
   function isAdmin(){ return role()==="admin"; }
+  function isOwnRow(r){ return !!(session && session.user && r && r.created_by === session.user.id); }
+  function canDeleteUsage(r){ return isAdmin() || isOwnRow(r); }
   function isPurchasing(){ return role()==="purchasing" || role()==="admin"; }
   function isStaff(){ return role()==="staff" || role()==="admin"; }
 
@@ -461,7 +463,7 @@
       html += '<div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Jenis plastik</th><th>Jumlah</th><th>Staf</th><th></th></tr></thead><tbody>';
       rows.forEach(function(r){
         html += '<tr><td>'+formatDate(r.usage_date)+'</td><td>'+escapeHtml(r.plastic_type)+'</td><td>'+fmtQty(r.quantity,r.unit)+'</td><td>'+escapeHtml(r.staff_name||"—")+'</td>'+
-          '<td>'+(isAdmin() ? '<button class="btn-icon" data-action="delete-usage" data-id="'+r.id+'" title="Hapus">✕</button>' : '')+'</td></tr>';
+          '<td>'+(canDeleteUsage(r) ? '<button class="btn-icon" data-action="delete-usage" data-id="'+r.id+'" title="Hapus">✕</button>' : '')+'</td></tr>';
       });
       html += "</tbody></table></div>";
     }
@@ -635,7 +637,11 @@
         list.forEach(function(t){
           html += '<tr><td>'+escapeHtml(t.name)+'</td>';
           html += '<td><input type="text" data-role="size-input" data-name="'+escapeHtml(t.name)+'" value="'+escapeHtml(t.size||"")+'" placeholder="cth: 36 x 055 x 63" style="width:150px;" '+(isAdmin()?'':'disabled')+'></td>';
-          html += '<td>'+escapeHtml(t.unit)+'</td>';
+          if(isAdmin()){
+            html += '<td><select data-role="unit-select" data-name="'+escapeHtml(t.name)+'" style="width:90px;">'+unitOptions(t.unit||(isRollSize(t.size)?"roll":"kg"))+'</select></td>';
+          } else {
+            html += '<td>'+escapeHtml(t.unit)+'</td>';
+          }
           html += '<td><input type="number" step="0.01" data-role="stock-input" data-name="'+escapeHtml(t.name)+'" value="'+(t.current_stock!=null?t.current_stock:"")+'" style="width:100px;" '+(isAdmin()?'':'disabled')+'></td>';
           if(isAdmin()){
             html += '<td><button class="btn-icon" data-action="remove-type" data-name="'+escapeHtml(t.name)+'" title="Hapus">✕</button></td>';
@@ -650,6 +656,7 @@
       html += '<div class="field"><label>Jenis plastik baru</label><input type="text" name="typeName" placeholder="cth: PVC Roll"></div>';
       html += '<div class="field"><label>Kategori</label><select name="typeCategory">'+CATEGORY_ORDER.map(function(c){ return '<option value="'+escapeHtml(c)+'">'+escapeHtml(c)+'</option>'; }).join("")+'</select></div>';
       html += '<div class="field"><label>Ukuran (opsional)</label><input type="text" name="typeSize" placeholder="cth: 36 x 055 x 63"></div>';
+      html += '<div class="field"><label>Satuan</label><select name="typeUnit"><option value="">Otomatis (dari ukuran)</option><option value="kg">kg</option><option value="roll">roll</option></select><div class="subtext" style="margin-top:4px;">Pilih roll untuk plastik yang datang dalam bentuk roll walau ukurannya tidak berakhiran 1000.</div></div>';
       html += '<div class="field"><button class="btn secondary" type="submit">Tambah jenis</button></div>';
       html += "</form>";
     }
@@ -987,7 +994,7 @@
         if(!name) return;
         if(findType(name)){ toast("Jenis tersebut sudah ada.", "error"); return; }
         var size = (data.typeSize||"").trim();
-        var unit = isRollSize(size) ? "roll" : "kg";
+        var unit = (data.typeUnit||"") || (isRollSize(size) ? "roll" : "kg");
         var insT = await sb.from("plastic_types").insert({ name:name, category:data.typeCategory||"Jarang Dipakai", size:size, unit:unit });
         if(insT.error) throw insT.error;
         toast("Jenis plastik ditambahkan.");
@@ -1023,7 +1030,7 @@
     if((el = e.target.closest('[data-action="delete-usage"]'))){
       if(!confirm("Hapus catatan pemakaian ini?")) return;
       var d1 = await sb.from("daily_usage").delete().eq("id", el.getAttribute("data-id"));
-      if(d1.error){ toast("Gagal menghapus.", "error"); return; }
+      if(d1.error){ toast("Gagal menghapus. Anda hanya bisa menghapus catatan yang Anda buat sendiri.", "error"); return; }
       await loadAll(); render(); return;
     }
     if((el = e.target.closest('[data-action="delete-request"]'))){
@@ -1268,12 +1275,24 @@
       return;
     }
 
+    if(e.target.matches && e.target.matches('[data-role="unit-select"]')){
+      if(!isAdmin()) return;
+      var unitName = e.target.getAttribute("data-name");
+      var pickedUnit = e.target.value;
+      var updU = await sb.from("plastic_types").update({ unit: pickedUnit }).eq("name", unitName);
+      if(updU.error){ toast("Gagal menyimpan satuan.", "error"); return; }
+      toast("Satuan " + unitName + " diubah menjadi " + pickedUnit + ".");
+      await loadAll();
+      // no full re-render, so the dropdown the admin just used keeps its place
+      return;
+    }
+
     if(e.target.matches && e.target.matches('[data-role="size-input"]')){
       if(!isAdmin()) return;
       var sizeName = e.target.getAttribute("data-name");
       var newSize = e.target.value.trim();
-      var newUnit = isRollSize(newSize) ? "roll" : "kg";
-      var updS = await sb.from("plastic_types").update({ size: newSize, unit: newUnit }).eq("name", sizeName);
+      // satuan sengaja tidak diubah di sini — diatur sendiri lewat dropdown Satuan
+      var updS = await sb.from("plastic_types").update({ size: newSize }).eq("name", sizeName);
       if(updS.error){ toast("Gagal menyimpan ukuran.", "error"); return; }
       toast("Ukuran diperbarui.");
       await loadAll(); render();
