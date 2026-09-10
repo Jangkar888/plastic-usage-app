@@ -284,6 +284,8 @@
   function isAdmin(){ return role()==="admin"; }
   function isOwnRow(r){ return !!(session && session.user && r && r.created_by === session.user.id); }
   function canDeleteUsage(r){ return isAdmin() || isOwnRow(r); }
+  // requests stay deletable only while nothing has acted on them yet
+  function canDeleteRequest(r, onPo){ return r.status==="Requested" && !onPo && (isAdmin() || isOwnRow(r)); }
   function isPurchasing(){ return role()==="purchasing" || role()==="admin"; }
   function isStaff(){ return role()==="staff" || role()==="admin"; }
 
@@ -529,7 +531,7 @@
           '<td>'+escapeHtml(r.requested_by||"—")+'</td><td>'+escapeHtml(r.notes||"—")+'</td>'+
           '<td><span class="badge '+badgeClass+'">'+escapeHtml(statusLabel(r.status))+'</span></td>'+
           '<td>'+(poForReq?('<button class="btn-icon" data-action="view-po" data-id="'+poForReq.id+'" title="Lihat PO" style="color:var(--accent);">'+escapeHtml(poForReq.po_number)+'</button>'):"—")+'</td>'+
-          '<td>'+((r.status==="Requested" && !onPo && isAdmin()) ? '<button class="btn-icon" data-action="delete-request" data-id="'+r.id+'" title="Hapus">✕</button>' : '')+'</td>'+
+          '<td>'+(canDeleteRequest(r, onPo) ? '<button class="btn-icon" data-action="delete-request" data-id="'+r.id+'" title="Hapus">✕</button>' : '')+'</td>'+
           '</tr>';
       });
       html += "</tbody></table></div>";
@@ -1036,7 +1038,7 @@
     if((el = e.target.closest('[data-action="delete-request"]'))){
       if(!confirm("Hapus permintaan pembelian ini?")) return;
       var d2 = await sb.from("purchase_requests").delete().eq("id", el.getAttribute("data-id"));
-      if(d2.error){ toast("Gagal menghapus.", "error"); return; }
+      if(d2.error){ toast("Gagal menghapus. Anda hanya bisa menghapus permintaan yang Anda buat sendiri.", "error"); return; }
       await loadAll(); render(); return;
     }
     if((el = e.target.closest('[data-action="delete-incoming"]'))){
