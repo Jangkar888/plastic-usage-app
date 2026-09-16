@@ -177,10 +177,7 @@
 <div id="app-shell">
   <nav id="nav">
     <span class="brand">CV. Jangkar Food</span>
-    <button class="tab-btn" data-tab="dashboard">Dasbor Plastik</button>
-    <button class="tab-btn" data-tab="usage">Pemakaian Harian</button>
-    <button class="tab-btn" data-tab="orders">Pesanan Pembelian</button>
-    <button class="tab-btn" data-tab="incoming">Plastik Masuk</button>
+    <button class="tab-btn" data-tab="plastik">Plastik</button>
     <button class="tab-btn" data-tab="produksi">Produksi</button>
     <button class="tab-btn" data-tab="settings">Pengaturan</button>
     <span class="spacer"></span>
@@ -247,7 +244,8 @@
   };
   var session = null;
   var profile = null;      // {id, display_name, role}
-  var activeTab = "dashboard";
+  var activeTab = "plastik";
+  var plastikSub = "dashboard";   // sub-menu di dalam tab Plastik
   var channels = [];
 
   // ---------- helpers ----------
@@ -1009,26 +1007,44 @@
     return html;
   }
 
+  function plastikSubs(){
+    var subs = [
+      { key:"dashboard", label:"Dasbor" },
+      { key:"usage",     label:"Pemakaian" },
+      { key:"orders",    label:"Pemesanan" }
+    ];
+    if(isPurchasing()) subs.push({ key:"incoming", label:"Barang Datang" });
+    return subs;
+  }
+  function renderPlastik(){
+    var subs = plastikSubs();
+    if(!subs.some(function(x){ return x.key===plastikSub; })) plastikSub = subs[0].key;
+    var html = '<div class="btn-row" style="margin-bottom:16px;">' + subs.map(function(x){
+      return '<button class="btn '+(x.key===plastikSub?'':'secondary')+'" data-action="set-plastik-sub" data-sub="'+x.key+'">'+escapeHtml(x.label)+'</button>';
+    }).join(" ") + '</div>';
+    if(plastikSub==="usage")    return html + renderUsage();
+    if(plastikSub==="orders")   return html + renderOrders();
+    if(plastikSub==="incoming" && isPurchasing()) return html + renderIncoming();
+    return html + renderDashboard();
+  }
   function renderTab(tab){
-    if(tab==="usage") return renderUsage();
-    if(tab==="orders") return renderOrders();
-    if(tab==="incoming" && isPurchasing()) return renderIncoming();
+    if(tab==="plastik") return renderPlastik();
     if(tab==="produksi" && isProduksi()) return renderProduksi();
     if(tab==="settings" && isPurchasing()) return renderSettings();
-    return renderDashboard();
+    return renderPlastik();
   }
 
   function isProduksi(){ return role()==="produksi" || role()==="admin"; }
   function visibleTabs(){
-    if(isAdmin()) return ["dashboard","usage","orders","incoming","produksi","settings"];
-    if(isPurchasing()) return ["dashboard","usage","orders","incoming","settings"];
+    if(isAdmin()) return ["plastik","produksi","settings"];
+    if(isPurchasing()) return ["plastik","settings"];
     if(role()==="produksi") return ["produksi"];
-    return ["dashboard","usage","orders"];
+    return ["plastik"];
   }
 
   function render(){
     var tabs = visibleTabs();
-    if(tabs.indexOf(activeTab)===-1) activeTab = "dashboard";
+    if(tabs.indexOf(activeTab)===-1) activeTab = tabs[0] || "plastik";
     Array.prototype.forEach.call(document.querySelectorAll("#nav .tab-btn"), function(b){
       var t = b.getAttribute("data-tab");
       b.classList.toggle("hidden", tabs.indexOf(t)===-1);
@@ -1390,6 +1406,11 @@
     if((el = e.target.closest('[data-action="toggle-run"]')) && !e.target.closest('[data-action="delete-run"]')){
       var rid = el.getAttribute("data-id");
       if(openRuns[rid]) delete openRuns[rid]; else openRuns[rid] = true;
+      render();
+      return;
+    }
+    if((el = e.target.closest('[data-action="set-plastik-sub"]'))){
+      plastikSub = el.getAttribute("data-sub");
       render();
       return;
     }
