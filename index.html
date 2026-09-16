@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Project Plastic Usage</title>
+<title>CV. Jangkar Food</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>♻️</text></svg>">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <style>
@@ -79,6 +79,13 @@
   }
   .table-wrap th:last-child{ background:var(--surface-2); z-index:3; }
   tr.cat-row td{ position:static !important; box-shadow:none !important; }
+  tr.detail-row td{ position:static !important; box-shadow:none !important; background:var(--surface-2); }
+  tr.run-row{ cursor:pointer; }
+  tr.run-row:hover td{ background:var(--surface-2); }
+  .run-detail{ display:flex; flex-wrap:wrap; gap:26px; padding:6px 2px 10px; }
+  .run-detail h5{ margin:0 0 6px; font-size:12px; letter-spacing:.05em; text-transform:uppercase; color:var(--text-muted); }
+  .run-detail ul{ margin:0; padding-left:18px; }
+  .run-detail li{ margin:2px 0; }
   .empty{ color:var(--text-muted); font-size:13.5px; padding:18px; text-align:center; }
   .badge{ display:inline-block; padding:3px 10px; border-radius:999px; font-size:12px; font-weight:600; white-space:nowrap; }
   .badge.requested{ background:var(--warning-soft); color:var(--warning); }
@@ -152,7 +159,7 @@
 
 <div id="login-screen">
   <form class="login-card" id="login-form" autocomplete="off">
-    <h1>♻️ Project Plastic Usage</h1>
+    <h1>CV. Jangkar Food</h1>
     <p class="sub">Masuk dengan username dan password Anda.</p>
     <div class="login-error" id="login-error"></div>
     <div class="field">
@@ -169,7 +176,7 @@
 
 <div id="app-shell">
   <nav id="nav">
-    <span class="brand">♻️ Project Plastic Usage</span>
+    <span class="brand">CV. Jangkar Food</span>
     <button class="tab-btn" data-tab="dashboard">Dasbor Plastik</button>
     <button class="tab-btn" data-tab="usage">Pemakaian Harian</button>
     <button class="tab-btn" data-tab="orders">Pesanan Pembelian</button>
@@ -702,6 +709,7 @@
   // ---------- produksi ----------
   var LINE_ORDER = ["Mie","Bihun","Makaroni"];
   var prodLine = "Mie";
+  var openRuns = {};   // id catatan yang sedang dibuka rinciannya
   function availableLines(){
     var seen = {};
     state.machines.forEach(function(m){ if(m.active!==false) seen[m.line] = true; });
@@ -893,6 +901,23 @@
     return html + '</form></div>';
   }
 
+  function renderRunDetail(r){
+    function list(rows, qtyKey, nameKey){
+      if(!rows.length) return '<div class="subtext">— tidak ada —</div>';
+      return '<ul>' + rows.map(function(x){
+        return '<li>'+escapeHtml(x[nameKey])+' — <strong>'+
+               (Math.round(Number(x[qtyKey]||0)*100)/100).toString().replace(".", ",")+' '+escapeHtml(x.unit||"")+
+               '</strong> <span class="subtext">('+fmtKg(Number(x.kg_total||0))+')</span></li>';
+      }).join("") + '</ul>';
+    }
+    var ins  = inputsOfRun(r.id).slice().sort(function(a,b){ return String(a.material).localeCompare(String(b.material)); });
+    var outs = outputsOfRun(r.id).slice().sort(function(a,b){ return String(a.product).localeCompare(String(b.product)); });
+    return '<tr class="detail-row"><td colspan="9"><div class="run-detail">' +
+      '<div style="min-width:240px;"><h5>Bahan dipakai</h5>'+list(ins,"quantity","material")+'</div>' +
+      '<div style="min-width:240px;"><h5>Hasil produksi</h5>'+list(outs,"quantity","product")+'</div>' +
+      '</div></td></tr>';
+  }
+
   function renderProduksiRuns(){
     var runs = state.prodRuns.filter(function(r){ return r.line===prodLine; }).slice(0,60);
     var html = '<div class="card"><h3 style="margin-top:0;">Catatan terakhir</h3>';
@@ -900,7 +925,9 @@
     html += '<div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Mesin</th><th>Supervisor</th><th>Bahan masuk</th><th>Hasil produksi</th><th>Susut / Tidak</th><th>%</th><th>Catatan</th><th></th></tr></thead><tbody>';
     runs.forEach(function(r){
       var t = runTotals(r.id);
-      html += '<tr><td>'+escapeHtml(fmtTanggal(r.prod_date))+'</td>'+
+      var open = !!openRuns[r.id];
+      html += '<tr class="run-row" data-action="toggle-run" data-id="'+r.id+'">'+
+        '<td><span class="subtext" style="display:inline-block;width:12px;">'+(open?"▾":"▸")+'</span> '+escapeHtml(fmtTanggal(r.prod_date))+'</td>'+
         '<td>'+escapeHtml(r.machine||"")+'</td>'+
         '<td>'+escapeHtml(r.supervisor||"—")+'</td>'+
         '<td>'+fmtKg(t.masuk)+'</td>'+
@@ -909,6 +936,7 @@
         '<td style="color:'+pctColor(t.pct)+';font-weight:600;">'+fmtPct(t.pct)+'</td>'+
         '<td>'+escapeHtml(r.notes||"")+'</td>'+
         '<td>'+((isAdmin()||isOwnRow(r)) ? '<button class="btn-icon" data-action="delete-run" data-id="'+r.id+'" title="Hapus">✕</button>' : '')+'</td></tr>';
+      if(open) html += renderRunDetail(r);
     });
     return html + '</tbody></table></div></div>';
   }
@@ -1175,7 +1203,7 @@
     var lines = pending.map(function(r){
       return "- " + r.plastic_type + ": stok saat ini " + fmtQty(r.stock,r.unit) + (r.requested_by?" (diminta oleh "+r.requested_by+")":"") + (r.notes?" — "+r.notes:"");
     });
-    var body = "Mohon cek stok plastik berikut dan tentukan jumlah pembelian:\n\n" + lines.join("\n") + "\n\nDikirim dari Project Plastic Usage.";
+    var body = "Mohon cek stok plastik berikut dan tentukan jumlah pembelian:\n\n" + lines.join("\n") + "\n\nDikirim dari aplikasi CV. Jangkar Food.";
     var mailHtml, waHtml;
     if(state.settings.purchasingEmail){
       var mailUrl = "mailto:" + encodeURIComponent(state.settings.purchasingEmail) + "?subject=" + encodeURIComponent("Daftar permintaan pembelian plastik") + "&body=" + encodeURIComponent(body);
@@ -1358,6 +1386,13 @@
 
   async function handleClick(e){
     var el;
+    // klik pada tombol hapus tidak ikut membuka rincian — biarkan lanjut ke handler hapus
+    if((el = e.target.closest('[data-action="toggle-run"]')) && !e.target.closest('[data-action="delete-run"]')){
+      var rid = el.getAttribute("data-id");
+      if(openRuns[rid]) delete openRuns[rid]; else openRuns[rid] = true;
+      render();
+      return;
+    }
     if((el = e.target.closest('[data-action="set-prod-line"]'))){
       var newLine = el.getAttribute("data-line");
       if(newLine !== prodLine){
