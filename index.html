@@ -26,6 +26,11 @@
       --danger:#f87171; --danger-soft:#3a1616;
     }
   }
+  .prod-tally{ display:flex; flex-wrap:wrap; gap:28px; align-items:flex-start; margin-top:18px;
+    padding:16px 18px; background:var(--surface-2); border:1px solid var(--border); border-radius:var(--radius); }
+  .prod-tally .tally-label{ font-size:12px; letter-spacing:.05em; text-transform:uppercase; color:var(--text-muted); margin-bottom:2px; }
+  .prod-tally .tally-value{ font-size:26px; font-weight:700; line-height:1.2; }
+  .prod-tally .tally-sub{ font-size:15px; font-weight:700; }
   *{ box-sizing:border-box; }
   html,body{ height:100%; }
   body{ background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; margin:0; }
@@ -413,7 +418,7 @@
       sb.from("purchase_order_items").select("*").order("created_at", {ascending:true}),
       sb.from("production_machines").select("*").order("sort_order"),
       sb.from("supervisors").select("*").order("name"),
-      sb.from("materials").select("*").order("kind").order("name"),
+      sb.from("materials").select("*").order("sort_order").order("name"),
       sb.from("products").select("*").order("name"),
       sb.from("production_run").select("*").order("prod_date", {ascending:false}),
       sb.from("production_input").select("*"),
@@ -716,6 +721,11 @@
     return { masuk:masuk, keluar:keluar, selisih:keluar-masuk, pct: masuk>0 ? ((keluar-masuk)/masuk*100) : null };
   }
   function fmtKg(n){ return (Math.round(Number(n)*10)/10).toFixed(1).replace(".", ",") + " kg"; }
+  function fmtBerat(kg){
+    var n = Number(kg)||0;
+    if(n > 0 && n < 1) return Math.round(n*1000) + " gr";
+    return fmtKg(n);
+  }
   function fmtPct(v){ return (v===null||!isFinite(v)) ? "—" : (v>0?"+":"") + v.toFixed(1).replace(".", ",") + "%"; }
   function fmtTanggal(iso){
     if(!iso) return "";
@@ -724,7 +734,13 @@
     if(isNaN(d.getTime())) return String(iso);
     return d.getDate() + " " + b[d.getMonth()] + " " + d.getFullYear();
   }
-  function selisihColor(v){ return v < 0 ? "var(--danger)" : "var(--accent)"; }
+  // di luar ±1% dianggap untung/rugi nyata; di dalamnya masih wajar
+  function pctColor(pct){
+    if(pct===null || !isFinite(pct)) return "var(--text-muted)";
+    if(pct >  1) return "var(--success)";
+    if(pct < -1) return "var(--danger)";
+    return "var(--warning)";
+  }
 
   function captureProdForm(){
     var f = document.querySelector('form[data-form="produksi-run"]');
@@ -754,16 +770,21 @@
     });
     return { masuk:masuk, keluar:keluar, selisih:keluar-masuk, pct: masuk>0 ? ((keluar-masuk)/masuk*100) : null };
   }
-  function prodDraftTotalsText(){
+  function prodTotalsHtml(){
     var t = prodDraftTotals();
-    if(!t.masuk && !t.keluar) return "Bahan masuk dan hasil keluar dihitung otomatis begitu angka diisi.";
-    return "Bahan masuk " + fmtKg(t.masuk) + " · hasil keluar " + fmtKg(t.keluar) +
-           " · selisih " + fmtKg(t.selisih) + " (" + fmtPct(t.pct) + ")";
+    var c = pctColor(t.pct);
+    return '<div class="prod-tally">' +
+      '<div><div class="tally-label">Bahan masuk</div><div class="tally-value">'+fmtKg(t.masuk)+'</div></div>' +
+      '<div><div class="tally-label">Hasil produksi</div><div class="tally-value">'+fmtKg(t.keluar)+'</div></div>' +
+      '<div><div class="tally-label">Susut / Tidak</div>' +
+        '<div class="tally-value" style="color:'+c+';">'+fmtKg(t.selisih)+'</div>' +
+        '<div class="tally-sub" style="color:'+c+';">'+fmtPct(t.pct)+'</div></div>' +
+    '</div>';
   }
 
   function renderProduksi(){
     var html = '<h2>Produksi Mie</h2>';
-    html += '<p class="subtext">Catat bahan yang dipakai dan hasil produksi untuk tiap mesin, per hari. Selisih dihitung otomatis.</p>';
+    html += '<p class="subtext">Catat bahan yang dipakai dan hasil produksi untuk tiap mesin, per hari. Susut/tidak dihitung otomatis: hijau bila lebih dari +1%, merah bila kurang dari −1%, oranye bila masih di antaranya.</p>';
     if(!state.machines.length){
       html += '<div class="card"><div class="empty">Data mesin belum ada. Jalankan dulu supabase_produksi.sql di Supabase.</div></div>';
       return html;
@@ -785,19 +806,20 @@
     var html = '<div class="card"><h3 style="margin-top:0;">Ringkasan bulan ini</h3>';
     var names = machinesForLine().map(function(m){ return m.name; }).filter(function(n){ return byMachine[n]; });
     if(!names.length){ return html + '<div class="empty">Belum ada catatan produksi bulan ini.</div></div>'; }
-    html += '<div class="table-wrap"><table><thead><tr><th>Mesin</th><th>Hari</th><th>Bahan masuk</th><th>Hasil keluar</th><th>Selisih</th><th>%</th></tr></thead><tbody>';
+    html += '<div class="table-wrap"><table><thead><tr><th>Mesin</th><th>Hari</th><th>Bahan masuk</th><th>Hasil produksi</th><th>Susut / Tidak</th><th>%</th></tr></thead><tbody>';
     var tm=0, tk=0;
     names.forEach(function(n){
       var b = byMachine[n], sel = b.keluar - b.masuk;
+      var rowPct = b.masuk>0 ? sel/b.masuk*100 : null;
       tm += b.masuk; tk += b.keluar;
       html += '<tr><td>'+escapeHtml(n)+'</td><td>'+b.hari+'</td><td>'+fmtKg(b.masuk)+'</td><td>'+fmtKg(b.keluar)+'</td>'+
-              '<td style="color:'+selisihColor(sel)+';">'+fmtKg(sel)+'</td>'+
-              '<td style="color:'+selisihColor(sel)+';">'+fmtPct(b.masuk>0?sel/b.masuk*100:null)+'</td></tr>';
+              '<td style="color:'+pctColor(rowPct)+';font-weight:600;">'+fmtKg(sel)+'</td>'+
+              '<td style="color:'+pctColor(rowPct)+';font-weight:600;">'+fmtPct(rowPct)+'</td></tr>';
     });
-    var tsel = tk - tm;
+    var tsel = tk - tm, tpct = tm>0 ? tsel/tm*100 : null;
     html += '<tr><td><strong>Total</strong></td><td></td><td><strong>'+fmtKg(tm)+'</strong></td><td><strong>'+fmtKg(tk)+'</strong></td>'+
-            '<td style="color:'+selisihColor(tsel)+';"><strong>'+fmtKg(tsel)+'</strong></td>'+
-            '<td style="color:'+selisihColor(tsel)+';"><strong>'+fmtPct(tm>0?tsel/tm*100:null)+'</strong></td></tr>';
+            '<td style="color:'+pctColor(tpct)+';"><strong>'+fmtKg(tsel)+'</strong></td>'+
+            '<td style="color:'+pctColor(tpct)+';"><strong>'+fmtPct(tpct)+'</strong></td></tr>';
     return html + '</tbody></table></div></div>';
   }
 
@@ -821,9 +843,10 @@
       html += '<div class="table-wrap"><table><thead><tr><th>Bahan</th><th>Jumlah</th><th>Setara</th></tr></thead><tbody>';
       mats.forEach(function(m){
         var v = d.inputs[m.name] || "";
-        html += '<tr><td>'+escapeHtml(m.name)+' <span class="subtext">('+fmtKg(Number(m.kg_per_unit||0))+'/'+escapeHtml(m.unit)+')</span></td>'+
-                '<td><input type="number" step="0.01" min="0" data-in="'+escapeHtml(m.name)+'" value="'+escapeHtml(String(v))+'" style="width:100px;"> <span class="subtext">'+escapeHtml(m.unit)+'</span></td>'+
-                '<td class="subtext">'+(v!=="" ? fmtKg(Number(v)*Number(m.kg_per_unit||0)) : "—")+'</td></tr>';
+        var stepIn = (m.unit==="sak") ? "1" : "0.01";
+        html += '<tr><td>'+escapeHtml(m.name)+' <span class="subtext">('+fmtBerat(Number(m.kg_per_unit||0))+'/'+escapeHtml(m.unit)+')</span></td>'+
+                '<td><input type="number" step="'+stepIn+'" min="0" data-in="'+escapeHtml(m.name)+'" value="'+escapeHtml(String(v))+'" style="width:100px;"> <span class="subtext">'+escapeHtml(m.unit)+'</span></td>'+
+                '<td class="subtext">'+(v!=="" ? fmtBerat(Number(v)*Number(m.kg_per_unit||0)) : "—")+'</td></tr>';
       });
       html += '</tbody></table></div>';
     }
@@ -838,15 +861,15 @@
         html += '<div class="table-wrap"><table><thead><tr><th>Produk</th><th>Jumlah</th><th>Setara</th></tr></thead><tbody>';
         prods.forEach(function(pr){
           var v = d.outputs[pr.name] || "";
-          html += '<tr><td>'+escapeHtml(pr.name)+' <span class="subtext">('+fmtKg(Number(pr.kg_per_unit||0))+'/'+escapeHtml(pr.unit)+')</span></td>'+
+          html += '<tr><td>'+escapeHtml(pr.name)+' <span class="subtext">('+fmtBerat(Number(pr.kg_per_unit||0))+'/'+escapeHtml(pr.unit)+')</span></td>'+
                   '<td><input type="number" step="1" min="0" data-out="'+escapeHtml(pr.name)+'" value="'+escapeHtml(String(v))+'" style="width:100px;"> <span class="subtext">'+escapeHtml(pr.unit)+'</span></td>'+
-                  '<td class="subtext">'+(v!=="" ? fmtKg(Number(v)*Number(pr.kg_per_unit||0)) : "—")+'</td></tr>';
+                  '<td class="subtext">'+(v!=="" ? fmtBerat(Number(v)*Number(pr.kg_per_unit||0)) : "—")+'</td></tr>';
         });
         html += '</tbody></table></div>';
       }
     }
 
-    html += '<div id="prod-totals" class="subtext" style="margin-top:14px;">'+escapeHtml(prodDraftTotalsText())+'</div>';
+    html += '<div id="prod-totals">'+prodTotalsHtml()+'</div>';
     html += '<div class="field" style="margin-top:12px;"><label>Catatan</label>'+
             '<textarea name="notes" rows="2" placeholder="mis. mesin 6 trouble, pindah ke mesin 7">'+escapeHtml(d.notes||"")+'</textarea></div>';
     html += '<div class="btn-row" style="margin-top:12px;"><button class="btn" type="submit">Simpan catatan</button></div>';
@@ -857,7 +880,7 @@
     var runs = state.prodRuns.filter(function(r){ return r.line===PROD_LINE; }).slice(0,60);
     var html = '<div class="card"><h3 style="margin-top:0;">Catatan terakhir</h3>';
     if(!runs.length){ return html + '<div class="empty">Belum ada catatan produksi.</div></div>'; }
-    html += '<div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Mesin</th><th>Supervisor</th><th>Masuk</th><th>Keluar</th><th>Selisih</th><th>%</th><th>Catatan</th><th></th></tr></thead><tbody>';
+    html += '<div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Mesin</th><th>Supervisor</th><th>Bahan masuk</th><th>Hasil produksi</th><th>Susut / Tidak</th><th>%</th><th>Catatan</th><th></th></tr></thead><tbody>';
     runs.forEach(function(r){
       var t = runTotals(r.id);
       html += '<tr><td>'+escapeHtml(fmtTanggal(r.prod_date))+'</td>'+
@@ -865,8 +888,8 @@
         '<td>'+escapeHtml(r.supervisor||"—")+'</td>'+
         '<td>'+fmtKg(t.masuk)+'</td>'+
         '<td>'+fmtKg(t.keluar)+'</td>'+
-        '<td style="color:'+selisihColor(t.selisih)+';">'+fmtKg(t.selisih)+'</td>'+
-        '<td style="color:'+selisihColor(t.selisih)+';">'+fmtPct(t.pct)+'</td>'+
+        '<td style="color:'+pctColor(t.pct)+';font-weight:600;">'+fmtKg(t.selisih)+'</td>'+
+        '<td style="color:'+pctColor(t.pct)+';font-weight:600;">'+fmtPct(t.pct)+'</td>'+
         '<td>'+escapeHtml(r.notes||"")+'</td>'+
         '<td>'+((isAdmin()||isOwnRow(r)) ? '<button class="btn-icon" data-action="delete-run" data-id="'+r.id+'" title="Hapus">✕</button>' : '')+'</td></tr>';
     });
@@ -1592,7 +1615,7 @@
     if(e.target.matches && (e.target.matches("[data-in]") || e.target.matches("[data-out]"))){
       captureProdForm();
       var totEl = document.getElementById("prod-totals");
-      if(totEl) totEl.textContent = prodDraftTotalsText();
+      if(totEl) totEl.innerHTML = prodTotalsHtml();
       var row = e.target.closest("tr");
       var cell = row ? row.lastElementChild : null;
       if(cell){
@@ -1600,7 +1623,7 @@
         var nm = isIn ? e.target.getAttribute("data-in") : e.target.getAttribute("data-out");
         var src = isIn ? state.materials.find(function(x){ return x.name===nm; })
                        : state.products.find(function(x){ return x.name===nm; });
-        cell.textContent = (e.target.value!=="" && src) ? fmtKg(Number(e.target.value)*Number(src.kg_per_unit||0)) : "—";
+        cell.textContent = (e.target.value!=="" && src) ? fmtBerat(Number(e.target.value)*Number(src.kg_per_unit||0)) : "—";
       }
       return;
     }
