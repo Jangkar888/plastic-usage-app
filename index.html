@@ -169,6 +169,7 @@
     <button class="tab-btn" data-tab="usage">Pemakaian Harian</button>
     <button class="tab-btn" data-tab="orders">Pesanan Pembelian</button>
     <button class="tab-btn" data-tab="incoming">Plastik Masuk</button>
+    <button class="tab-btn" data-tab="produksi">Produksi Mie</button>
     <button class="tab-btn" data-tab="settings">Pengaturan</button>
     <span class="spacer"></span>
     <span class="who" id="who-label"></span>
@@ -223,7 +224,14 @@
     purchaseRequests: [],
     incoming: [],
     purchaseOrders: [],    // [{id,po_number,po_date,supplier,notes,status,...}]
-    poItems: []            // [{id,po_id,plastic_type,size,unit,order_quantity,unit_price,received_quantity,request_id}]
+    poItems: [],           // [{id,po_id,plastic_type,size,unit,order_quantity,unit_price,received_quantity,request_id}]
+    machines: [],          // [{id,line,name,sort_order}]
+    supervisors: [],       // [{id,name}]
+    materials: [],         // [{id,name,kind,unit,kg_per_unit}]
+    products: [],          // [{id,line,name,unit,kg_per_unit,machines[]}]
+    prodRuns: [],          // [{id,prod_date,line,machine,supervisor,notes,created_by}]
+    prodInputs: [],        // [{id,run_id,material,quantity,unit,kg_total}]
+    prodOutputs: []        // [{id,run_id,product,quantity,unit,kg_total}]
   };
   var session = null;
   var profile = null;      // {id, display_name, role}
@@ -394,7 +402,7 @@
 
   // ---------- data loading ----------
   async function loadAll(){
-    var [pt, sup, settings, du, pr, inc, po, poi] = await Promise.all([
+    var [pt, sup, settings, du, pr, inc, po, poi, mch, spv, mat, prd, run, pin, pout] = await Promise.all([
       sb.from("plastic_types").select("*").order("category").order("name"),
       sb.from("suppliers").select("*").order("name"),
       sb.from("app_settings").select("*"),
@@ -403,6 +411,13 @@
       sb.from("incoming").select("*").order("created_at", {ascending:false}),
       sb.from("purchase_orders").select("*").order("created_at", {ascending:false}),
       sb.from("purchase_order_items").select("*").order("created_at", {ascending:true}),
+      sb.from("production_machines").select("*").order("sort_order"),
+      sb.from("supervisors").select("*").order("name"),
+      sb.from("materials").select("*").order("kind").order("name"),
+      sb.from("products").select("*").order("name"),
+      sb.from("production_run").select("*").order("prod_date", {ascending:false}),
+      sb.from("production_input").select("*"),
+      sb.from("production_output").select("*"),
     ]);
     state.plasticTypes = (pt.data||[]).sort(function(a,b){
       var ca = CATEGORY_ORDER.indexOf(a.category), cb = CATEGORY_ORDER.indexOf(b.category);
@@ -410,6 +425,14 @@
       return 0;
     });
     state.suppliers = sup.data || [];
+    // Tabel produksi mungkin belum dibuat — biarkan kosong, jangan sampai error.
+    state.machines    = mch.data  || [];
+    state.supervisors = spv.data  || [];
+    state.materials   = mat.data  || [];
+    state.products    = prd.data  || [];
+    state.prodRuns    = run.data  || [];
+    state.prodInputs  = pin.data  || [];
+    state.prodOutputs = pout.data || [];
     var settingsMap = {};
     (settings.data||[]).forEach(function(row){ settingsMap[row.key]=row.value; });
     state.settings = { purchasingEmail: settingsMap.purchasingEmail||"", purchasingWhatsapp: settingsMap.purchasingWhatsapp||"" };
@@ -448,7 +471,8 @@
   function subscribeRealtime(){
     channels.forEach(function(ch){ sb.removeChannel(ch); });
     channels = [];
-    ["daily_usage","purchase_requests","incoming","plastic_types","suppliers","app_settings","purchase_orders","purchase_order_items"].forEach(function(table){
+    ["daily_usage","purchase_requests","incoming","plastic_types","suppliers","app_settings","purchase_orders","purchase_order_items",
+     "production_run","production_input","production_output","products","materials","production_machines","supervisors"].forEach(function(table){
       var ch = sb.channel("rt-"+table)
         .on("postgres_changes", { event:"*", schema:"public", table:table }, function(){
           loadAll().then(render);
@@ -670,6 +694,185 @@
     return html;
   }
 
+  // ---------- produksi ----------
+  var PROD_LINE = "Mie";
+  var prodDraft = { prod_date:"", machine:"", supervisor:"", notes:"", inputs:{}, outputs:{} };
+
+  function machinesForLine(){
+    return state.machines.filter(function(m){ return m.line===PROD_LINE && m.active!==false; });
+  }
+  function productsForMachine(machineName){
+    return state.products.filter(function(p){
+      if(p.line!==PROD_LINE || p.active===false) return false;
+      if(!p.machines || !p.machines.length) return true;   // produk umum, semua mesin
+      return p.machines.indexOf(machineName) !== -1;
+    });
+  }
+  function inputsOfRun(id){ return state.prodInputs.filter(function(x){ return x.run_id===id; }); }
+  function outputsOfRun(id){ return state.prodOutputs.filter(function(x){ return x.run_id===id; }); }
+  function runTotals(id){
+    var masuk  = inputsOfRun(id).reduce(function(a,x){ return a + Number(x.kg_total||0); }, 0);
+    var keluar = outputsOfRun(id).reduce(function(a,x){ return a + Number(x.kg_total||0); }, 0);
+    return { masuk:masuk, keluar:keluar, selisih:keluar-masuk, pct: masuk>0 ? ((keluar-masuk)/masuk*100) : null };
+  }
+  function fmtKg(n){ return (Math.round(Number(n)*10)/10).toFixed(1).replace(".", ",") + " kg"; }
+  function fmtPct(v){ return (v===null||!isFinite(v)) ? "—" : (v>0?"+":"") + v.toFixed(1).replace(".", ",") + "%"; }
+  function fmtTanggal(iso){
+    if(!iso) return "";
+    var b = ["Jan","Feb","Mar","Apr","Mei","Jun","Jul","Agu","Sep","Okt","Nov","Des"];
+    var d = new Date(iso);
+    if(isNaN(d.getTime())) return String(iso);
+    return d.getDate() + " " + b[d.getMonth()] + " " + d.getFullYear();
+  }
+  function selisihColor(v){ return v < 0 ? "var(--danger)" : "var(--accent)"; }
+
+  function captureProdForm(){
+    var f = document.querySelector('form[data-form="produksi-run"]');
+    if(!f) return;
+    function g(n){ var el = f.querySelector('[name="'+n+'"]'); return el ? el.value : ""; }
+    prodDraft.prod_date  = g("prodDate");
+    prodDraft.machine    = g("machine");
+    prodDraft.supervisor = g("supervisor");
+    prodDraft.notes      = g("notes");
+    prodDraft.inputs = {}; prodDraft.outputs = {};
+    Array.prototype.forEach.call(f.querySelectorAll("[data-in]"), function(el){
+      if(el.value !== "") prodDraft.inputs[el.getAttribute("data-in")] = el.value;
+    });
+    Array.prototype.forEach.call(f.querySelectorAll("[data-out]"), function(el){
+      if(el.value !== "") prodDraft.outputs[el.getAttribute("data-out")] = el.value;
+    });
+  }
+  function prodDraftTotals(){
+    var masuk = 0, keluar = 0;
+    Object.keys(prodDraft.inputs).forEach(function(n){
+      var m = state.materials.find(function(x){ return x.name===n; });
+      if(m) masuk += Number(prodDraft.inputs[n]||0) * Number(m.kg_per_unit||0);
+    });
+    Object.keys(prodDraft.outputs).forEach(function(n){
+      var pr = state.products.find(function(x){ return x.name===n; });
+      if(pr) keluar += Number(prodDraft.outputs[n]||0) * Number(pr.kg_per_unit||0);
+    });
+    return { masuk:masuk, keluar:keluar, selisih:keluar-masuk, pct: masuk>0 ? ((keluar-masuk)/masuk*100) : null };
+  }
+  function prodDraftTotalsText(){
+    var t = prodDraftTotals();
+    if(!t.masuk && !t.keluar) return "Bahan masuk dan hasil keluar dihitung otomatis begitu angka diisi.";
+    return "Bahan masuk " + fmtKg(t.masuk) + " · hasil keluar " + fmtKg(t.keluar) +
+           " · selisih " + fmtKg(t.selisih) + " (" + fmtPct(t.pct) + ")";
+  }
+
+  function renderProduksi(){
+    var html = '<h2>Produksi Mie</h2>';
+    html += '<p class="subtext">Catat bahan yang dipakai dan hasil produksi untuk tiap mesin, per hari. Selisih dihitung otomatis.</p>';
+    if(!state.machines.length){
+      html += '<div class="card"><div class="empty">Data mesin belum ada. Jalankan dulu supabase_produksi.sql di Supabase.</div></div>';
+      return html;
+    }
+    return html + renderProduksiSummary() + renderProduksiForm() + renderProduksiRuns();
+  }
+
+  function renderProduksiSummary(){
+    var now = new Date();
+    var byMachine = {};
+    state.prodRuns.forEach(function(r){
+      if(r.line!==PROD_LINE) return;
+      var d = new Date(r.prod_date);
+      if(d.getFullYear()!==now.getFullYear() || d.getMonth()!==now.getMonth()) return;
+      var t = runTotals(r.id);
+      var b = byMachine[r.machine] || (byMachine[r.machine] = { masuk:0, keluar:0, hari:0 });
+      b.masuk += t.masuk; b.keluar += t.keluar; b.hari += 1;
+    });
+    var html = '<div class="card"><h3 style="margin-top:0;">Ringkasan bulan ini</h3>';
+    var names = machinesForLine().map(function(m){ return m.name; }).filter(function(n){ return byMachine[n]; });
+    if(!names.length){ return html + '<div class="empty">Belum ada catatan produksi bulan ini.</div></div>'; }
+    html += '<div class="table-wrap"><table><thead><tr><th>Mesin</th><th>Hari</th><th>Bahan masuk</th><th>Hasil keluar</th><th>Selisih</th><th>%</th></tr></thead><tbody>';
+    var tm=0, tk=0;
+    names.forEach(function(n){
+      var b = byMachine[n], sel = b.keluar - b.masuk;
+      tm += b.masuk; tk += b.keluar;
+      html += '<tr><td>'+escapeHtml(n)+'</td><td>'+b.hari+'</td><td>'+fmtKg(b.masuk)+'</td><td>'+fmtKg(b.keluar)+'</td>'+
+              '<td style="color:'+selisihColor(sel)+';">'+fmtKg(sel)+'</td>'+
+              '<td style="color:'+selisihColor(sel)+';">'+fmtPct(b.masuk>0?sel/b.masuk*100:null)+'</td></tr>';
+    });
+    var tsel = tk - tm;
+    html += '<tr><td><strong>Total</strong></td><td></td><td><strong>'+fmtKg(tm)+'</strong></td><td><strong>'+fmtKg(tk)+'</strong></td>'+
+            '<td style="color:'+selisihColor(tsel)+';"><strong>'+fmtKg(tsel)+'</strong></td>'+
+            '<td style="color:'+selisihColor(tsel)+';"><strong>'+fmtPct(tm>0?tsel/tm*100:null)+'</strong></td></tr>';
+    return html + '</tbody></table></div></div>';
+  }
+
+  function renderProduksiForm(){
+    var d = prodDraft;
+    var html = '<div class="card"><h3 style="margin-top:0;">Catatan produksi harian</h3><form data-form="produksi-run">';
+    html += '<div class="form-grid">';
+    html += '<div class="field"><label>Tanggal</label><input type="date" name="prodDate" value="'+escapeHtml(d.prod_date||todayIso())+'"></div>';
+    html += '<div class="field"><label>Mesin</label><select name="machine" data-role="prod-machine"><option value="">Pilih mesin…</option>'+
+            machinesForLine().map(function(m){
+              return '<option value="'+escapeHtml(m.name)+'"'+(m.name===d.machine?' selected':'')+'>'+escapeHtml(m.name)+'</option>';
+            }).join("")+'</select></div>';
+    html += '<div class="field"><label>Supervisor</label><input type="text" name="supervisor" list="spv-list" value="'+escapeHtml(d.supervisor||"")+'" placeholder="nama supervisor">'+
+            '<datalist id="spv-list">'+state.supervisors.map(function(x){ return '<option value="'+escapeHtml(x.name)+'">'; }).join("")+'</datalist></div>';
+    html += '</div>';
+
+    html += '<h4 style="margin:18px 0 6px;">Bahan dipakai</h4>';
+    var mats = state.materials.filter(function(m){ return m.active!==false; });
+    if(!mats.length){ html += '<div class="empty">Daftar bahan belum ada.</div>'; }
+    else {
+      html += '<div class="table-wrap"><table><thead><tr><th>Bahan</th><th>Jumlah</th><th>Setara</th></tr></thead><tbody>';
+      mats.forEach(function(m){
+        var v = d.inputs[m.name] || "";
+        html += '<tr><td>'+escapeHtml(m.name)+' <span class="subtext">('+fmtKg(Number(m.kg_per_unit||0))+'/'+escapeHtml(m.unit)+')</span></td>'+
+                '<td><input type="number" step="0.01" min="0" data-in="'+escapeHtml(m.name)+'" value="'+escapeHtml(String(v))+'" style="width:100px;"> <span class="subtext">'+escapeHtml(m.unit)+'</span></td>'+
+                '<td class="subtext">'+(v!=="" ? fmtKg(Number(v)*Number(m.kg_per_unit||0)) : "—")+'</td></tr>';
+      });
+      html += '</tbody></table></div>';
+    }
+
+    html += '<h4 style="margin:18px 0 6px;">Hasil produksi</h4>';
+    if(!d.machine){
+      html += '<div class="empty">Pilih mesin dulu untuk melihat daftar produknya.</div>';
+    } else {
+      var prods = productsForMachine(d.machine);
+      if(!prods.length){ html += '<div class="empty">Belum ada produk terdaftar untuk mesin ini.</div>'; }
+      else {
+        html += '<div class="table-wrap"><table><thead><tr><th>Produk</th><th>Jumlah</th><th>Setara</th></tr></thead><tbody>';
+        prods.forEach(function(pr){
+          var v = d.outputs[pr.name] || "";
+          html += '<tr><td>'+escapeHtml(pr.name)+' <span class="subtext">('+fmtKg(Number(pr.kg_per_unit||0))+'/'+escapeHtml(pr.unit)+')</span></td>'+
+                  '<td><input type="number" step="1" min="0" data-out="'+escapeHtml(pr.name)+'" value="'+escapeHtml(String(v))+'" style="width:100px;"> <span class="subtext">'+escapeHtml(pr.unit)+'</span></td>'+
+                  '<td class="subtext">'+(v!=="" ? fmtKg(Number(v)*Number(pr.kg_per_unit||0)) : "—")+'</td></tr>';
+        });
+        html += '</tbody></table></div>';
+      }
+    }
+
+    html += '<div id="prod-totals" class="subtext" style="margin-top:14px;">'+escapeHtml(prodDraftTotalsText())+'</div>';
+    html += '<div class="field" style="margin-top:12px;"><label>Catatan</label>'+
+            '<textarea name="notes" rows="2" placeholder="mis. mesin 6 trouble, pindah ke mesin 7">'+escapeHtml(d.notes||"")+'</textarea></div>';
+    html += '<div class="btn-row" style="margin-top:12px;"><button class="btn" type="submit">Simpan catatan</button></div>';
+    return html + '</form></div>';
+  }
+
+  function renderProduksiRuns(){
+    var runs = state.prodRuns.filter(function(r){ return r.line===PROD_LINE; }).slice(0,60);
+    var html = '<div class="card"><h3 style="margin-top:0;">Catatan terakhir</h3>';
+    if(!runs.length){ return html + '<div class="empty">Belum ada catatan produksi.</div></div>'; }
+    html += '<div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Mesin</th><th>Supervisor</th><th>Masuk</th><th>Keluar</th><th>Selisih</th><th>%</th><th>Catatan</th><th></th></tr></thead><tbody>';
+    runs.forEach(function(r){
+      var t = runTotals(r.id);
+      html += '<tr><td>'+escapeHtml(fmtTanggal(r.prod_date))+'</td>'+
+        '<td>'+escapeHtml(r.machine||"")+'</td>'+
+        '<td>'+escapeHtml(r.supervisor||"—")+'</td>'+
+        '<td>'+fmtKg(t.masuk)+'</td>'+
+        '<td>'+fmtKg(t.keluar)+'</td>'+
+        '<td style="color:'+selisihColor(t.selisih)+';">'+fmtKg(t.selisih)+'</td>'+
+        '<td style="color:'+selisihColor(t.selisih)+';">'+fmtPct(t.pct)+'</td>'+
+        '<td>'+escapeHtml(r.notes||"")+'</td>'+
+        '<td>'+((isAdmin()||isOwnRow(r)) ? '<button class="btn-icon" data-action="delete-run" data-id="'+r.id+'" title="Hapus">✕</button>' : '')+'</td></tr>';
+    });
+    return html + '</tbody></table></div></div>';
+  }
+
   function renderSettings(){
     var html = "";
     html += '<h2>Pengaturan</h2><p class="subtext">Kelola jenis plastik, stok, pemasok, dan kontak staf pembelian.</p>';
@@ -742,12 +945,16 @@
     if(tab==="usage") return renderUsage();
     if(tab==="orders") return renderOrders();
     if(tab==="incoming" && isPurchasing()) return renderIncoming();
+    if(tab==="produksi" && isProduksi()) return renderProduksi();
     if(tab==="settings" && isPurchasing()) return renderSettings();
     return renderDashboard();
   }
 
+  function isProduksi(){ return role()==="produksi" || role()==="admin"; }
   function visibleTabs(){
+    if(isAdmin()) return ["dashboard","usage","orders","incoming","produksi","settings"];
     if(isPurchasing()) return ["dashboard","usage","orders","incoming","settings"];
+    if(role()==="produksi") return ["produksi"];
     return ["dashboard","usage","orders"];
   }
 
@@ -763,7 +970,7 @@
     document.getElementById("app").innerHTML = renderTab(activeTab);
   }
   function roleLabel(r){
-    return { staff:"Staf produksi", purchasing:"Staf pembelian", admin:"Admin" }[r] || r;
+    return { staff:"Staf produksi", purchasing:"Staf pembelian", admin:"Admin", produksi:"Supervisor produksi" }[r] || r;
   }
 
   // ---------- Purchase Order ----------
@@ -1041,6 +1248,38 @@
         toast("Plastik masuk telah dicatat." + closeMsg);
         form.reset();
         await loadAll(); render();
+      } else if(kind==="produksi-run"){
+        captureProdForm();
+        var runDate = prodDraft.prod_date || todayIso();
+        if(!prodDraft.machine){ toast("Mohon pilih mesin terlebih dahulu.", "error"); markInvalid(form,"machine"); return; }
+        var inNames  = Object.keys(prodDraft.inputs);
+        var outNames = Object.keys(prodDraft.outputs);
+        if(!inNames.length && !outNames.length){ toast("Mohon isi bahan yang dipakai atau hasil produksinya.", "error"); return; }
+        var dup = state.prodRuns.find(function(r){
+          return r.line===PROD_LINE && r.prod_date===runDate && r.machine===prodDraft.machine;
+        });
+        if(dup){ toast("Catatan untuk mesin dan tanggal ini sudah ada. Hapus dulu yang lama bila ingin menggantinya.", "error"); return; }
+        var runIns = await sb.from("production_run").insert({
+          prod_date: runDate, line: PROD_LINE, machine: prodDraft.machine,
+          supervisor: prodDraft.supervisor||"", notes: prodDraft.notes||"", created_by: session.user.id
+        }).select().single();
+        if(runIns.error) throw runIns.error;
+        var runId = runIns.data.id;
+        var inRows = inNames.map(function(n){
+          var m = state.materials.find(function(x){ return x.name===n; }) || {};
+          var q = Number(prodDraft.inputs[n]||0);
+          return { run_id:runId, material:n, quantity:q, unit:m.unit||"", kg_total:q*Number(m.kg_per_unit||0) };
+        });
+        var outRows = outNames.map(function(n){
+          var pr = state.products.find(function(x){ return x.name===n; }) || {};
+          var q = Number(prodDraft.outputs[n]||0);
+          return { run_id:runId, product:n, quantity:q, unit:pr.unit||"", kg_total:q*Number(pr.kg_per_unit||0) };
+        });
+        if(inRows.length){ var ri = await sb.from("production_input").insert(inRows); if(ri.error) throw ri.error; }
+        if(outRows.length){ var ro = await sb.from("production_output").insert(outRows); if(ro.error) throw ro.error; }
+        toast("Catatan produksi disimpan.");
+        prodDraft = { prod_date:"", machine:"", supervisor:"", notes:"", inputs:{}, outputs:{} };
+        await loadAll(); render();
       } else if(kind==="add-type"){
         var name = (data.typeName||"").trim();
         if(!name) return;
@@ -1079,6 +1318,13 @@
 
   async function handleClick(e){
     var el;
+    if((el = e.target.closest('[data-action="delete-run"]'))){
+      if(!confirm("Hapus catatan produksi ini beserta rincian bahan dan hasilnya?")) return;
+      var dr = await sb.from("production_run").delete().eq("id", el.getAttribute("data-id"));
+      if(dr.error){ toast("Gagal menghapus. Anda hanya bisa menghapus catatan yang Anda buat sendiri.", "error"); return; }
+      toast("Catatan produksi dihapus.");
+      await loadAll(); render(); return;
+    }
     if((el = e.target.closest('[data-action="delete-usage"]'))){
       if(!confirm("Hapus catatan pemakaian ini?")) return;
       var d1 = await sb.from("daily_usage").delete().eq("id", el.getAttribute("data-id"));
@@ -1333,6 +1579,28 @@
           var cb = closeWrap.querySelector('[name="closePo"]');
           if(cb) cb.checked = false;
         }
+      }
+      return;
+    }
+
+    if(e.target.matches && e.target.matches('[data-role="prod-machine"]')){
+      captureProdForm();
+      render();   // daftar produk ikut mesin yang dipilih
+      return;
+    }
+
+    if(e.target.matches && (e.target.matches("[data-in]") || e.target.matches("[data-out]"))){
+      captureProdForm();
+      var totEl = document.getElementById("prod-totals");
+      if(totEl) totEl.textContent = prodDraftTotalsText();
+      var row = e.target.closest("tr");
+      var cell = row ? row.lastElementChild : null;
+      if(cell){
+        var isIn = e.target.hasAttribute("data-in");
+        var nm = isIn ? e.target.getAttribute("data-in") : e.target.getAttribute("data-out");
+        var src = isIn ? state.materials.find(function(x){ return x.name===nm; })
+                       : state.products.find(function(x){ return x.name===nm; });
+        cell.textContent = (e.target.value!=="" && src) ? fmtKg(Number(e.target.value)*Number(src.kg_per_unit||0)) : "—";
       }
       return;
     }
