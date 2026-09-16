@@ -174,7 +174,7 @@
     <button class="tab-btn" data-tab="usage">Pemakaian Harian</button>
     <button class="tab-btn" data-tab="orders">Pesanan Pembelian</button>
     <button class="tab-btn" data-tab="incoming">Plastik Masuk</button>
-    <button class="tab-btn" data-tab="produksi">Produksi Mie</button>
+    <button class="tab-btn" data-tab="produksi">Produksi</button>
     <button class="tab-btn" data-tab="settings">Pengaturan</button>
     <span class="spacer"></span>
     <span class="who" id="who-label"></span>
@@ -700,15 +700,26 @@
   }
 
   // ---------- produksi ----------
-  var PROD_LINE = "Mie";
+  var LINE_ORDER = ["Mie","Bihun","Makaroni"];
+  var prodLine = "Mie";
+  function availableLines(){
+    var seen = {};
+    state.machines.forEach(function(m){ if(m.active!==false) seen[m.line] = true; });
+    var found = Object.keys(seen);
+    found.sort(function(a,b){
+      var ia = LINE_ORDER.indexOf(a), ib = LINE_ORDER.indexOf(b);
+      return (ia<0?99:ia) - (ib<0?99:ib);
+    });
+    return found;
+  }
   var prodDraft = { prod_date:"", machine:"", supervisor:"", notes:"", inputs:{}, outputs:{} };
 
   function machinesForLine(){
-    return state.machines.filter(function(m){ return m.line===PROD_LINE && m.active!==false; });
+    return state.machines.filter(function(m){ return m.line===prodLine && m.active!==false; });
   }
   function productsForMachine(machineName){
     return state.products.filter(function(p){
-      if(p.line!==PROD_LINE || p.active===false) return false;
+      if(p.line!==prodLine || p.active===false) return false;
       if(!p.machines || !p.machines.length) return true;   // produk umum, semua mesin
       return p.machines.indexOf(machineName) !== -1;
     });
@@ -783,7 +794,14 @@
   }
 
   function renderProduksi(){
-    var html = '<h2>Produksi Mie</h2>';
+    var lines = availableLines();
+    if(lines.length && lines.indexOf(prodLine)===-1) prodLine = lines[0];
+    var html = '<h2>Produksi ' + escapeHtml(prodLine) + '</h2>';
+    if(lines.length > 1){
+      html += '<div class="btn-row" style="margin-bottom:14px;">' + lines.map(function(L){
+        return '<button class="btn '+(L===prodLine?'':'secondary')+'" data-action="set-prod-line" data-line="'+escapeHtml(L)+'">'+escapeHtml(L)+'</button>';
+      }).join(" ") + '</div>';
+    }
     html += '<p class="subtext">Catat bahan yang dipakai dan hasil produksi untuk tiap mesin, per hari. Susut/tidak dihitung otomatis: hijau bila lebih dari +1%, merah bila kurang dari −1%, oranye bila masih di antaranya.</p>';
     if(!state.machines.length){
       html += '<div class="card"><div class="empty">Data mesin belum ada. Jalankan dulu supabase_produksi.sql di Supabase.</div></div>';
@@ -796,7 +814,7 @@
     var now = new Date();
     var byMachine = {};
     state.prodRuns.forEach(function(r){
-      if(r.line!==PROD_LINE) return;
+      if(r.line!==prodLine) return;
       var d = new Date(r.prod_date);
       if(d.getFullYear()!==now.getFullYear() || d.getMonth()!==now.getMonth()) return;
       var t = runTotals(r.id);
@@ -876,7 +894,7 @@
   }
 
   function renderProduksiRuns(){
-    var runs = state.prodRuns.filter(function(r){ return r.line===PROD_LINE; }).slice(0,60);
+    var runs = state.prodRuns.filter(function(r){ return r.line===prodLine; }).slice(0,60);
     var html = '<div class="card"><h3 style="margin-top:0;">Catatan terakhir</h3>';
     if(!runs.length){ return html + '<div class="empty">Belum ada catatan produksi.</div></div>'; }
     html += '<div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Mesin</th><th>Supervisor</th><th>Bahan masuk</th><th>Hasil produksi</th><th>Susut / Tidak</th><th>%</th><th>Catatan</th><th></th></tr></thead><tbody>';
@@ -1278,11 +1296,11 @@
         var outNames = Object.keys(prodDraft.outputs);
         if(!inNames.length && !outNames.length){ toast("Mohon isi bahan yang dipakai atau hasil produksinya.", "error"); return; }
         var dup = state.prodRuns.find(function(r){
-          return r.line===PROD_LINE && r.prod_date===runDate && r.machine===prodDraft.machine;
+          return r.line===prodLine && r.prod_date===runDate && r.machine===prodDraft.machine;
         });
         if(dup){ toast("Catatan untuk mesin dan tanggal ini sudah ada. Hapus dulu yang lama bila ingin menggantinya.", "error"); return; }
         var runIns = await sb.from("production_run").insert({
-          prod_date: runDate, line: PROD_LINE, machine: prodDraft.machine,
+          prod_date: runDate, line: prodLine, machine: prodDraft.machine,
           supervisor: prodDraft.supervisor||"", notes: prodDraft.notes||"", created_by: session.user.id
         }).select().single();
         if(runIns.error) throw runIns.error;
@@ -1340,6 +1358,15 @@
 
   async function handleClick(e){
     var el;
+    if((el = e.target.closest('[data-action="set-prod-line"]'))){
+      var newLine = el.getAttribute("data-line");
+      if(newLine !== prodLine){
+        prodLine = newLine;
+        prodDraft = { prod_date:"", machine:"", supervisor:"", notes:"", inputs:{}, outputs:{} };
+        render();
+      }
+      return;
+    }
     if((el = e.target.closest('[data-action="delete-run"]'))){
       if(!confirm("Hapus catatan produksi ini beserta rincian bahan dan hasilnya?")) return;
       var dr = await sb.from("production_run").delete().eq("id", el.getAttribute("data-id"));
