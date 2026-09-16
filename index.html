@@ -843,9 +843,8 @@
       html += '<div class="table-wrap"><table><thead><tr><th>Bahan</th><th>Jumlah</th><th>Setara</th></tr></thead><tbody>';
       mats.forEach(function(m){
         var v = d.inputs[m.name] || "";
-        var stepIn = (m.unit==="sak") ? "1" : "0.01";
         html += '<tr><td>'+escapeHtml(m.name)+' <span class="subtext">('+fmtBerat(Number(m.kg_per_unit||0))+'/'+escapeHtml(m.unit)+')</span></td>'+
-                '<td><input type="number" step="'+stepIn+'" min="0" data-in="'+escapeHtml(m.name)+'" value="'+escapeHtml(String(v))+'" style="width:100px;"> <span class="subtext">'+escapeHtml(m.unit)+'</span></td>'+
+                '<td><input type="number" step="1" min="0" data-in="'+escapeHtml(m.name)+'" value="'+escapeHtml(String(v))+'" style="width:100px;"> <span class="subtext">'+escapeHtml(m.unit)+'</span></td>'+
                 '<td class="subtext">'+(v!=="" ? fmtBerat(Number(v)*Number(m.kg_per_unit||0)) : "—")+'</td></tr>';
       });
       html += '</tbody></table></div>';
