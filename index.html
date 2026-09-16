@@ -262,6 +262,54 @@
     return parts.length>=2 && parts[parts.length-1]==="1000";
   }
   function digitsOnly(str){ return String(str||"").replace(/[^0-9]/g,""); }
+
+  // Perkiraan berat per lembar, hanya untuk plastik bentuk kantong (lebar x tebal x panjang).
+  // Tebal ditulis 055 / 06 / 04 = 0,055 / 0,06 / 0,04 mm untuk SATU lapis;
+  // kantong terdiri dari dua lapis, jadi tebal bahan dikali dua.
+  var PP_DENSITY = 0.90; // g/cm3, plastik PP
+  function thicknessMm(tok){
+    var d = digitsOnly(tok);
+    if(!d) return 0;
+    return parseFloat("0." + d);
+  }
+  function bagWidthCm(tok){
+    // "35/23" = lebar gelar / lebar badan — bahan mengikuti angka yang lebih besar
+    var v = parseFloat(String(tok||"").split("/")[0].trim());
+    return isFinite(v) ? v : 0;
+  }
+  function gramsPerPiece(size){
+    if(!size || isRollSize(size)) return null;
+    var parts = String(size).split("x").map(function(p){ return p.trim(); });
+    if(parts.length !== 3) return null;
+    var w = bagWidthCm(parts[0]);
+    var t = thicknessMm(parts[1]);
+    var l = parseFloat(String(parts[2]).replace(",", "."));
+    if(!w || !t || !isFinite(l) || !l) return null;
+    return 2 * w * l * (t/10) * PP_DENSITY;
+  }
+  function pcsPerKg(size){
+    var g = gramsPerPiece(size);
+    return g ? Math.round(1000/g) : null;
+  }
+  // Untuk roll: isi 1 roll = panjang roll (1000 m) dibagi jarak eye mark.
+  var ROLL_LENGTH_MM = 1000 * 1000; // 1000 meter dalam mm
+  function pcsPerRoll(repeatMm){
+    var r = Number(repeatMm);
+    if(!isFinite(r) || r <= 0) return null;
+    return Math.round(ROLL_LENGTH_MM / r);
+  }
+  function pcsCell(t){
+    if(isRollSize(t.size)){
+      var out = '<input type="number" step="1" min="1" data-role="repeat-input" data-name="'+escapeHtml(t.name)+'" value="'+(t.repeat_mm!=null?t.repeat_mm:"")+'" placeholder="mm" style="width:80px;" '+(isAdmin()?'':'disabled')+'>';
+      var pr = pcsPerRoll(t.repeat_mm);
+      out += pr ? ' <span class="subtext">≈ '+pr+' pcs/roll</span>'
+                : ' <span class="subtext">jarak eye mark</span>';
+      return out;
+    }
+    var g = gramsPerPiece(t.size);
+    if(g === null) return '<span class="subtext">—</span>';
+    return '≈ ' + Math.round(1000/g) + ' pcs/kg <span class="subtext">(' + g.toFixed(1).replace(".", ",") + ' g/pcs)</span>';
+  }
   function toast(msg, kind){
     var t = document.createElement("div");
     t.textContent = msg;
@@ -628,14 +676,15 @@
 
     html += '<div class="card"><h3 style="margin-top:0;">Jenis plastik &amp; stok saat ini</h3>';
     html += '<p class="subtext">Ukuran ditampilkan sebagai lebar x tebal x panjang. Stok bisa diperbarui langsung di sini.</p>';
+    html += '<p class="subtext">Kantong: pcs/kg dihitung dari ukuran dengan asumsi bahan PP (0,90 g/cm³) dan dua lapis. Roll: isikan jarak eye mark ke eye mark (mm), lalu isi per roll dihitung dari panjang 1000 m. Keduanya perkiraan — mohon dicek dengan barang aslinya.</p>';
     if(state.plasticTypes.length===0){ html += '<div class="table-wrap"><div class="empty">Belum ada jenis plastik.</div></div>'; }
     else {
-      html += '<div class="table-wrap"><table><thead><tr><th>Jenis plastik</th><th>Ukuran</th><th>Satuan</th><th>Stok saat ini</th>'+(isAdmin()?'<th></th>':'')+'</tr></thead><tbody>';
+      html += '<div class="table-wrap"><table><thead><tr><th>Jenis plastik</th><th>Ukuran</th><th>Satuan</th><th>Perkiraan isi</th><th>Stok saat ini</th>'+(isAdmin()?'<th></th>':'')+'</tr></thead><tbody>';
       var byCat = typesByCategory();
       CATEGORY_ORDER.forEach(function(cat){
         var list = byCat[cat];
         if(!list || !list.length) return;
-        html += '<tr class="cat-row"><td colspan="'+(isAdmin()?5:4)+'">'+escapeHtml(cat)+'</td></tr>';
+        html += '<tr class="cat-row"><td colspan="'+(isAdmin()?6:5)+'">'+escapeHtml(cat)+'</td></tr>';
         list.forEach(function(t){
           html += '<tr><td>'+escapeHtml(t.name)+'</td>';
           html += '<td><input type="text" data-role="size-input" data-name="'+escapeHtml(t.name)+'" value="'+escapeHtml(t.size||"")+'" placeholder="cth: 36 x 055 x 63" style="width:150px;" '+(isAdmin()?'':'disabled')+'></td>';
@@ -644,6 +693,7 @@
           } else {
             html += '<td>'+escapeHtml(t.unit)+'</td>';
           }
+          html += '<td>'+pcsCell(t)+'</td>';
           html += '<td><input type="number" step="0.01" data-role="stock-input" data-name="'+escapeHtml(t.name)+'" value="'+(t.current_stock!=null?t.current_stock:"")+'" style="width:100px;" '+(isAdmin()?'':'disabled')+'></td>';
           if(isAdmin()){
             html += '<td><button class="btn-icon" data-action="remove-type" data-name="'+escapeHtml(t.name)+'" title="Hapus">✕</button></td>';
@@ -1204,7 +1254,17 @@
       var sel = e.target;
       var hint = sel.parentElement.querySelector(".spec-hint");
       var t = findType(sel.value);
-      if(hint){ hint.textContent = (t && t.size) ? ("Ukuran: " + t.size) : ""; }
+      if(hint){
+        var hintTxt = (t && t.size) ? ("Ukuran: " + t.size) : "";
+        if(t && isRollSize(t.size)){
+          var pr2 = pcsPerRoll(t.repeat_mm);
+          if(pr2) hintTxt += " · ≈ " + pr2 + " pcs/roll";
+        } else {
+          var pk = t ? pcsPerKg(t.size) : null;
+          if(pk) hintTxt += " · ≈ " + pk + " pcs/kg";
+        }
+        hint.textContent = hintTxt;
+      }
       var form = sel.closest("form");
       if(form){
         var unitSel = form.querySelector('select[name="unit"]');
@@ -1274,6 +1334,17 @@
           if(cb) cb.checked = false;
         }
       }
+      return;
+    }
+
+    if(e.target.matches && e.target.matches('[data-role="repeat-input"]')){
+      if(!isAdmin()) return;
+      var repName = e.target.getAttribute("data-name");
+      var repVal = e.target.value === "" ? null : Number(e.target.value);
+      var updR = await sb.from("plastic_types").update({ repeat_mm: repVal }).eq("name", repName);
+      if(updR.error){ toast("Gagal menyimpan jarak eye mark.", "error"); return; }
+      toast("Jarak eye mark diperbarui.");
+      await loadAll(); render();
       return;
     }
 
