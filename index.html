@@ -423,7 +423,7 @@
       sb.from("purchase_order_items").select("*").order("created_at", {ascending:true}),
       sb.from("production_machines").select("*").order("sort_order"),
       sb.from("supervisors").select("*").order("name"),
-      sb.from("materials").select("*").order("sort_order").order("name"),
+      sb.from("materials").select("*").order("line").order("sort_order").order("name"),
       sb.from("products").select("*").order("name"),
       sb.from("production_run").select("*").order("prod_date", {ascending:false}),
       sb.from("production_input").select("*"),
@@ -723,6 +723,16 @@
   function machinesForLine(){
     return state.machines.filter(function(m){ return m.line===prodLine && m.active!==false; });
   }
+  function materialsForLine(){
+    return state.materials.filter(function(m){ return m.line===prodLine && m.active!==false; });
+  }
+  // penting: cari bahan HANYA di lini yang sedang aktif, supaya satuannya tidak tertukar
+  function findMaterial(name){
+    return state.materials.find(function(x){ return x.line===prodLine && x.name===name; });
+  }
+  function findProduct(name){
+    return state.products.find(function(x){ return x.line===prodLine && x.name===name; });
+  }
   function productsForMachine(machineName){
     return state.products.filter(function(p){
       if(p.line!==prodLine || p.active===false) return false;
@@ -778,11 +788,11 @@
   function prodDraftTotals(){
     var masuk = 0, keluar = 0;
     Object.keys(prodDraft.inputs).forEach(function(n){
-      var m = state.materials.find(function(x){ return x.name===n; });
+      var m = findMaterial(n);
       if(m) masuk += Number(prodDraft.inputs[n]||0) * Number(m.kg_per_unit||0);
     });
     Object.keys(prodDraft.outputs).forEach(function(n){
-      var pr = state.products.find(function(x){ return x.name===n; });
+      var pr = findProduct(n);
       if(pr) keluar += Number(prodDraft.outputs[n]||0) * Number(pr.kg_per_unit||0);
     });
     return { masuk:masuk, keluar:keluar, selisih:keluar-masuk, pct: masuk>0 ? ((keluar-masuk)/masuk*100) : null };
@@ -813,7 +823,7 @@
       html += '<div class="card"><div class="empty">Data mesin belum ada. Jalankan dulu supabase_produksi.sql di Supabase.</div></div>';
       return html;
     }
-    return html + renderProduksiSummary() + renderProduksiForm() + renderProduksiRuns();
+    return html + renderProduksiSummary() + renderKelompokSummary() + renderProduksiForm() + renderProduksiRuns();
   }
 
   function renderProduksiSummary(){
@@ -847,6 +857,36 @@
     return html + '</tbody></table></div></div>';
   }
 
+  function renderKelompokSummary(){
+    var now = new Date();
+    var byGroup = {}, any = false;
+    state.prodRuns.forEach(function(r){
+      if(r.line!==prodLine) return;
+      var dt = new Date(r.prod_date);
+      if(dt.getFullYear()!==now.getFullYear() || dt.getMonth()!==now.getMonth()) return;
+      outputsOfRun(r.id).forEach(function(o){
+        var pr = findProduct(o.product);
+        var g = (pr && pr.kelompok) ? pr.kelompok : "Lain-lain";
+        if(pr && pr.kelompok) any = true;
+        var b = byGroup[g] || (byGroup[g] = { kg:0, n:0 });
+        b.kg += Number(o.kg_total||0);
+        b.n  += 1;
+      });
+    });
+    if(!any) return "";   // lini ini belum memakai kelompok
+    var keys = Object.keys(byGroup).sort();
+    var total = keys.reduce(function(a,k){ return a + byGroup[k].kg; }, 0);
+    var html = '<div class="card"><h3 style="margin-top:0;">Hasil per kelompok bulan ini</h3>';
+    html += '<div class="table-wrap"><table><thead><tr><th>Kelompok</th><th>Hasil produksi</th><th>Porsi</th></tr></thead><tbody>';
+    keys.forEach(function(k){
+      var share = total>0 ? (byGroup[k].kg/total*100) : 0;
+      html += '<tr><td>'+escapeHtml(k)+'</td><td>'+fmtKg(byGroup[k].kg)+'</td>'+
+              '<td class="subtext">'+share.toFixed(1).replace(".", ",")+'%</td></tr>';
+    });
+    html += '<tr><td><strong>Total</strong></td><td><strong>'+fmtKg(total)+'</strong></td><td></td></tr>';
+    return html + '</tbody></table></div></div>';
+  }
+
   function renderProduksiForm(){
     var d = prodDraft;
     var html = '<div class="card"><h3 style="margin-top:0;">Catatan produksi harian</h3><form data-form="produksi-run">';
@@ -861,7 +901,7 @@
     html += '</div>';
 
     html += '<h4 style="margin:18px 0 6px;">Bahan dipakai</h4>';
-    var mats = state.materials.filter(function(m){ return m.active!==false; });
+    var mats = materialsForLine();
     if(!mats.length){ html += '<div class="empty">Daftar bahan belum ada.</div>'; }
     else {
       html += '<div class="table-wrap"><table><thead><tr><th>Bahan</th><th>Jumlah</th><th>Setara</th></tr></thead><tbody>';
@@ -882,11 +922,21 @@
       if(!prods.length){ html += '<div class="empty">Belum ada produk terdaftar untuk mesin ini.</div>'; }
       else {
         html += '<div class="table-wrap"><table><thead><tr><th>Produk</th><th>Jumlah</th><th>Setara</th></tr></thead><tbody>';
+        var groups = {}, gOrder = [];
         prods.forEach(function(pr){
+          var g = pr.kelompok || "";
+          if(!(g in groups)){ groups[g] = []; gOrder.push(g); }
+          groups[g].push(pr);
+        });
+        var showHeaders = gOrder.some(function(g){ return g !== ""; });
+        gOrder.forEach(function(g){
+        if(showHeaders && g) html += '<tr class="cat-row"><td colspan="3">'+escapeHtml(g)+'</td></tr>';
+        groups[g].forEach(function(pr){
           var v = d.outputs[pr.name] || "";
           html += '<tr><td>'+escapeHtml(pr.name)+' <span class="subtext">('+fmtBerat(Number(pr.kg_per_unit||0))+'/'+escapeHtml(pr.unit)+')</span></td>'+
                   '<td><input type="number" step="1" min="0" data-out="'+escapeHtml(pr.name)+'" value="'+escapeHtml(String(v))+'" style="width:100px;"> <span class="subtext">'+escapeHtml(pr.unit)+'</span></td>'+
                   '<td class="subtext">'+(v!=="" ? fmtBerat(Number(v)*Number(pr.kg_per_unit||0)) : "—")+'</td></tr>';
+        });
         });
         html += '</tbody></table></div>';
       }
@@ -908,8 +958,18 @@
                '</strong> <span class="subtext">('+fmtKg(Number(x.kg_total||0))+')</span></li>';
       }).join("") + '</ul>';
     }
-    var ins  = inputsOfRun(r.id).slice().sort(function(a,b){ return String(a.material).localeCompare(String(b.material)); });
-    var outs = outputsOfRun(r.id).slice().sort(function(a,b){ return String(a.product).localeCompare(String(b.product)); });
+    var ins = inputsOfRun(r.id).slice().sort(function(a,b){
+      var ma = findMaterial(a.material), mb = findMaterial(b.material);
+      var oa = ma ? Number(ma.sort_order||99) : 99, ob = mb ? Number(mb.sort_order||99) : 99;
+      if(oa!==ob) return oa-ob;
+      return String(a.material).localeCompare(String(b.material));
+    });
+    var outs = outputsOfRun(r.id).slice().sort(function(a,b){
+      var pa = findProduct(a.product), pb = findProduct(b.product);
+      var ga = (pa && pa.kelompok) || "", gb = (pb && pb.kelompok) || "";
+      if(ga!==gb) return ga.localeCompare(gb);
+      return String(a.product).localeCompare(String(b.product));
+    });
     return '<tr class="detail-row"><td colspan="9"><div class="run-detail">' +
       '<div style="min-width:240px;"><h5>Bahan dipakai</h5>'+list(ins,"quantity","material")+'</div>' +
       '<div style="min-width:240px;"><h5>Hasil produksi</h5>'+list(outs,"quantity","product")+'</div>' +
@@ -1350,12 +1410,12 @@
         if(runIns.error) throw runIns.error;
         var runId = runIns.data.id;
         var inRows = inNames.map(function(n){
-          var m = state.materials.find(function(x){ return x.name===n; }) || {};
+          var m = findMaterial(n) || {};
           var q = Number(prodDraft.inputs[n]||0);
           return { run_id:runId, material:n, quantity:q, unit:m.unit||"", kg_total:q*Number(m.kg_per_unit||0) };
         });
         var outRows = outNames.map(function(n){
-          var pr = state.products.find(function(x){ return x.name===n; }) || {};
+          var pr = findProduct(n) || {};
           var q = Number(prodDraft.outputs[n]||0);
           return { run_id:runId, product:n, quantity:q, unit:pr.unit||"", kg_total:q*Number(pr.kg_per_unit||0) };
         });
@@ -1703,8 +1763,7 @@
       if(cell){
         var isIn = e.target.hasAttribute("data-in");
         var nm = isIn ? e.target.getAttribute("data-in") : e.target.getAttribute("data-out");
-        var src = isIn ? state.materials.find(function(x){ return x.name===nm; })
-                       : state.products.find(function(x){ return x.name===nm; });
+        var src = isIn ? findMaterial(nm) : findProduct(nm);
         cell.textContent = (e.target.value!=="" && src) ? fmtBerat(Number(e.target.value)*Number(src.kg_per_unit||0)) : "—";
       }
       return;
