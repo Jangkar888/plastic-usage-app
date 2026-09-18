@@ -208,7 +208,9 @@
   var SUPABASE_URL = "https://wzpssdcvqojqrioikpnr.supabase.co";
   var SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind6cHNzZGN2cW9qcXJpb2lrcG5yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgxNzY2MjEsImV4cCI6MjEwMzc1MjYyMX0.uoNIcHNXfBErfZ3T7TZzDhY2wTVGN0WOLnxsVu9udmg";
   var sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-  var AUTH_DOMAIN = "plastikusage.local";
+  var AUTH_DOMAIN = "jangkar.local";
+  // domain lama — akun yang belum dipindah tetap bisa masuk
+  var LEGACY_AUTH_DOMAIN = "plastikusage.local";
 
   var CATEGORY_ORDER = ["Plastik Mie","Plastik Bihun","Plastik Makaroni","Jarang Dipakai"];
 
@@ -400,6 +402,11 @@
   async function doLogin(username, password){
     var email = resolveEmail(username);
     var res = await sb.auth.signInWithPassword({ email: email, password: password });
+    if(res.error && String(username||"").indexOf("@")===-1){
+      var legacy = String(username).trim().toLowerCase() + "@" + LEGACY_AUTH_DOMAIN;
+      var res2 = await sb.auth.signInWithPassword({ email: legacy, password: password });
+      if(!res2.error) return res2.data.session;
+    }
     if(res.error) throw res.error;
     return res.data.session;
   }
